@@ -1,7 +1,11 @@
 // Service worker do GeoGus: app-shell cache-first, dados/tiles network-first.
 // v5 corrige Response.clone() tardio e remove caches antigos que podiam guardar 404s.
-const SHELL = 'gg-shell-v5';
-const DATA = 'gg-data-v5';
+const SHELL = 'gg-shell-v6';
+const DATA = 'gg-data-v6';
+
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
+});
 
 self.addEventListener('install', (event) => {
   event.waitUntil(

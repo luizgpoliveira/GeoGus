@@ -142,7 +142,7 @@ function Shell() {
     });
     const ongoing = new Set(erup.ongoing.keys());
     const list = classifyAll(ongoing, alerts);
-    const eruptingNow = new Set(list.filter((v) => v.status === 'ERUPCAO').map((v) => v.vn));
+    const eruptingNow = new Set(list.filter((v) => v.holocene && v.status === 'ERUPCAO').map((v) => v.vn));
     if (notify && baseline.current.eruptions && settingsRef.current.eruptionAlerts) {
       for (const vn of eruptingNow) {
         if (!eruptingRef.current.has(vn)) {
@@ -186,7 +186,7 @@ function Shell() {
         setObsInfo({ phivolcs: srcInfo('phivolcs', 'PHIVOLCS', phivR), pvmbg: srcInfo('pvmbg', 'PVMBG', pvmbgR), usgs: srcInfo('usgs', 'USGS HANS', hansR) });
         const initialCurrent = new Set([...erup.ongoing.keys(), ...reportedCurrentEruptionsRef.current]);
         const list = withActivity(cat.map((v) => classifyVolcano(v, initialCurrent, active, recent, alertsRef.current)));
-        eruptingRef.current = new Set(list.filter((v) => v.status === 'ERUPCAO').map((v) => v.vn));
+        eruptingRef.current = new Set(list.filter((v) => v.holocene && v.status === 'ERUPCAO').map((v) => v.vn));
         setVolcanoes(list);
         setVolcanoInfo({ id: 'gvp', label: 'Smithsonian GVP', ok: true, updated: Date.now() });
         baseline.current.eruptions = true;
@@ -294,7 +294,7 @@ function Shell() {
         && now - item.ts <= 48 * 60 * 60_000)
       .map((item) => Number(item.volcanoVn)));
     const updated = classifyAll(ongoingRef.current, alertsRef.current);
-    eruptingRef.current = new Set(updated.filter((v) => v.status === 'ERUPCAO').map((v) => v.vn));
+    eruptingRef.current = new Set(updated.filter((v) => v.holocene && v.status === 'ERUPCAO').map((v) => v.vn));
     setVolcanoes(updated);
   }, [reports, classifyAll]);
 
@@ -359,12 +359,12 @@ function Shell() {
     const m = settings.minMag;
     const c24 = quakes.filter((q) => q.time > now - 86400e3 && q.mag >= m).length;
     const c7 = quakes.filter((q) => q.time > now - 7 * 86400e3 && q.mag >= m).length;
-    const erupting = volcanoes.filter((v) => v.status === 'ERUPCAO').length;
+    const erupting = volcanoes.filter((v) => v.holocene && v.status === 'ERUPCAO').length;
     return { c24, c7, erupting };
   }, [quakes, volcanoes, settings.minMag]);
 
   const sortedQuakes = useMemo(() => [...quakes].sort((a, b) => b.time - a.time), [quakes]);
-  const eruptingList = useMemo(() => volcanoes.filter((v) => v.status === 'ERUPCAO').sort((a, b) => (b.lastEruption ?? 0) - (a.lastEruption ?? 0)), [volcanoes]);
+  const eruptingList = useMemo(() => volcanoes.filter((v) => v.holocene && v.status === 'ERUPCAO').sort((a, b) => (b.lastEruption ?? 0) - (a.lastEruption ?? 0)), [volcanoes]);
 
   const historicalCount = HISTORICAL_GEOLOGY.length + volcanoes.filter((v) => !v.holocene).length;
   const unread = notifs.filter((n) => n.kind !== 'sistema').length;

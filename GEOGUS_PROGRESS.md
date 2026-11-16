@@ -223,3 +223,19 @@ Este arquivo registra o estado da entrega para permitir retomada em outra sessÃ
 - A contagem do toggle é dinâmica: estruturas locais + registros Pleistocenos retornados pelo catálogo GVP.
 
 - A camada histórica aplica deduplicação espacial de 12 km entre registros Pleistocenos GVP e complexos estáticos, reduzindo duplicatas de estruturas já representadas no catálogo.
+
+
+## Correção de separação operacional x histórico (16/11/2026)
+- `classifyVolcano` agora força entradas não-Holocenas para `EXTINTO` antes de considerar erupções contínuas, alertas ou relatórios.
+- `App.tsx` passou a contar/notificar/listar como erupção somente registros `holocene === true`.
+- `Intel.tsx` restringe o carrossel a vulcões Holocenos em erupção e inicia recolhido sem persistir estado aberto.
+- `styles.css` esconde o corpo quando a seção não está aberta.
+- Service worker atualizado para v6 e registro com `updateViaCache: none`; recarrega uma vez quando uma nova versão passa a controlar a página para evitar JS antigo em cache.
+
+## Correção adicional: exclusão total do histórico da área operacional e atualização de cache (16/11/2026)
+- `classifyVolcano` força todo registro Pleistoceno (`holocene=false`) para `EXTINTO` antes de avaliar qualquer alerta ou registro de erupção.
+- Carrossel, contador, aba Em erupção, notificações e listas agora exigem `holocene === true` e `status === ERUPCAO`.
+- `loadVolcanoCatalog` deduplica por VolcanoNumber e prefere o registro do catálogo Holoceno quando o mesmo ID aparece nas duas camadas.
+- Carrossel contém estado inicial explicitamente fechado e CSS de proteção para `data-open=false`.
+- Service Worker sobe para v6, registra com `updateViaCache: none`, chama update() e atualiza o cliente quando a nova versão passa a controlar a página.
+- Vercel recebe cabeçalhos no-cache para `/`, `/index.html` e `/sw.js`, reduzindo a chance de servir entry point/worker antigos.

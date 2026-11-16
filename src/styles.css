@@ -186,6 +186,9 @@ h2 { font-size: 17px; } h3 { font-size: 13px; text-transform: uppercase; letter-
 
 /* ===== Central de Inteligência (destaque + cards + atualizações) ===== */
 .intel { background: linear-gradient(180deg, rgba(255,95,46,.10), rgba(11,15,23,0)); border-bottom: 1px solid var(--border); }
+/* Garantia visual: nenhum conteúdo do carrossel aparece enquanto a seção está recolhida. */
+.intel:not(.open) .intel-body { display: none !important; }
+.intel[data-open="false"] .intel-body { display: none !important; }
 .intel-head { display: flex; align-items: center; gap: 12px; padding: 8px 14px; flex-wrap: wrap; }
 .intel-toggle { display: flex; align-items: center; gap: 9px; background: none; border: none; color: var(--text); font: inherit; font-weight: 700; letter-spacing: .06em; font-size: 13.5px; cursor: pointer; }
 .intel-toggle:hover { color: var(--accent2); }

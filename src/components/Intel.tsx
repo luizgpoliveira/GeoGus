@@ -41,9 +41,10 @@ function riskInfo(hazard?: HistoricalHazard) {
 /** Carrossel operacional: somente vulcões cuja erupção em andamento foi confirmada. */
 export default function Intel({ reports, volcanoes, onLocate, onOpen }: IntelProps) {
   const { t, locale } = useI18n();
-  const [open, setOpen] = useState(false);
+  // O carrossel sempre inicia recolhido; a preferência não é persistida entre aberturas.
+  const [open, setOpen] = useState<boolean>(false);
   const eruptingVolcanoes = useMemo(
-    () => volcanoes.filter((v) => v.status === 'ERUPCAO'),
+    () => volcanoes.filter((v) => v.holocene === true && v.status === 'ERUPCAO'),
     [volcanoes],
   );
   const eruptingKey = useMemo(
@@ -108,7 +109,7 @@ export default function Intel({ reports, volcanoes, onLocate, onOpen }: IntelPro
   };
 
   return (
-    <section className={`intel ${open ? 'open' : ''}`}>
+    <section className={`intel ${open ? 'open' : ''}`} data-open={open ? 'true' : 'false'}>
       <div className="intel-head">
         <button className="intel-toggle" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
           <span className="intel-dot" /> {t('intel.title')}

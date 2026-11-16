@@ -90,6 +90,11 @@ export function classifyVolcano(
   v: Omit<Volcano, 'status'>, ongoingVNs: Set<number>, activeVNs: Set<number>,
   recentVNs: Set<number> = new Set(), alerts?: AlertMaps,
 ): Volcano {
+  // Defesa de domínio: entradas do catálogo Pleistoceno são históricas e
+  // nunca podem ser promovidas a erupção atual por colisão de VN, relatório
+  // legado ou associação de alertas de observatórios.
+  if (!v.holocene) return { ...v, status: 'EXTINTO', alertInfo: undefined };
+
   const obs: AlertInfo[] = [];
   const hans = alerts?.hans.get(v.vn);
   if (hans) obs.push(hans);
@@ -174,9 +179,21 @@ export async function loadVolcanoCatalog(): Promise<Omit<Volcano, 'status'>[]> {
     gvpQuery({ typeNames: VP_LAY, propertyName: VP_PROPS, count: '2000' }),
     gvpQuery({ typeNames: PLEIST_LAY, propertyName: 'Volcano_Number,Volcano_Name,Primary_Volcano_Type,Country,Latitude,Longitude,Elevation', count: '2000' }),
   ]);
-  const out: Omit<Volcano, 'status'>[] = [];
-  for (const f of hol.features ?? []) { const v = parseVolcano(f, true); if (v) out.push(v); }
-  for (const f of ple.features ?? []) { const v = parseVolcano(f, false); if (v) out.push(v); }
+  // Um mesmo VolcanoNumber pode aparecer em mais de uma camada do serviço.
+  // Mantemos um único registro e damos precedência ao catálogo Holoceno para
+  // impedir que uma linha Pleistocena duplique ou contamine a camada operacional.
+  const byVolcanoNumber = new Map<number, Omit<Volcano, 'status'>>();
+  for (const f of hol.features ?? []) {
+    const v = parseVolcano(f, true);
+    const vn = Number(v?.vn);
+    if (v && Number.isFinite(vn) && vn > 0) byVolcanoNumber.set(vn, v);
+  }
+  for (const f of ple.features ?? []) {
+    const v = parseVolcano(f, false);
+    const vn = Number(v?.vn);
+    if (v && Number.isFinite(vn) && vn > 0 && !byVolcanoNumber.has(vn)) byVolcanoNumber.set(vn, v);
+  }
+  const out = [...byVolcanoNumber.values()];
   if (!out.length) throw new Error('Catálogo GVP vazio ou indisponível');
   return out;
 }
