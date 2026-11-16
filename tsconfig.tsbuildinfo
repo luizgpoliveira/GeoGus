@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/api.ts","./src/i18n.ts","./src/main.tsx","./src/types.ts","./src/components/details.tsx","./src/components/intel.tsx","./src/components/mapview.tsx","./src/components/searchbar.tsx","./src/components/volcanophoto.tsx"],"version":"5.9.3"}
