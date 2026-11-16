@@ -9,7 +9,7 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 const TTL_OBS = 10 * 60_000;
 const TTL_REPORTS = 5 * 60_000;
 const TTL_CAT = 12 * 3600e3;
-const SOURCE_TIMEOUT = { catalog: 8_000, phivolcs: 7_000, bulletin: 3_500, pvmbg: 7_000, usgs: 7_000, news: 5_500, gvp: 6_000, jma: 6_500, ingv: 6_500, sernageomin: 6_500, insivumeh: 6_500, vaac: 6_500, ai: 4_000 };
+const SOURCE_TIMEOUT = { catalog: 8_000, phivolcs: 7_000, bulletin: 3_500, pvmbg: 7_000, usgs: 7_000, news: 5_500, gvp: 6_000, ai: 4_000 };
 const FAILURE_BACKOFF = 2 * 60_000;
 const GVP_BLOCK_BACKOFF = 60 * 60_000;
 const GVP_TRANSIENT_BACKOFF = 5 * 60_000;
@@ -147,39 +147,13 @@ async function getCatalog() {
         const hit = byName.get(target);
         if (hit) list.push({ ...hit, words: [a] });
       }
-      if (list.length < 50) throw new Error(`GVP WFS devolveu catálogo incompleto (${list.length} registros reconhecidos).`);
       catalog = { t: Date.now(), list };
       catalogFailedAt = 0;
       return list;
-    } catch (gvpError) {
-      // Fallback oficial: o USGS mantém uma lista mundial baseada no catálogo GVP.
-      // Isso permite associar PHIVOLCS/PVMBG/JMA/VAAC mesmo quando o WFS do Smithsonian
-      // está temporariamente indisponível ou responde HTTP 403.
-      try {
-        const fallback = await fetchJSONWithTimeout(
-          'https://volcanoes.usgs.gov/vsc/api/volcanoApi/volcanoesGVP',
-          { headers: { 'User-Agent': UA, Accept: 'application/json' } },
-          SOURCE_TIMEOUT.catalog,
-        );
-        const candidateRows = Array.isArray(fallback) ? fallback : (fallback?.volcanoes || fallback?.data || fallback?.results || fallback?.features || []);
-        const rows = Array.isArray(candidateRows) ? candidateRows : (Array.isArray(candidateRows?.features) ? candidateRows.features : []);
-        const list = [];
-        for (const row of rows) {
-          const p = row?.properties || row || {};
-          const vn = Number(p.VolcanoNumber ?? p.volcanoNumber ?? p.vnum ?? p.vnum_gvp ?? p.volcano_number);
-          const name = p.VolcanoName ?? p.volcanoName ?? p.volcano_name ?? p.name;
-          if (!vn || !name) continue;
-          list.push({ vn, name: String(name), country: p.Country ?? p.country ?? '—', words: words(name) });
-        }
-        if (list.length < 50) throw new Error(`USGS devolveu catálogo incompleto (${list.length} registros reconhecidos).`);
-        catalog = { t: Date.now(), list };
-        catalogFailedAt = 0;
-        return list;
-      } catch (fallbackError) {
-        catalogFailedAt = Date.now();
-        if (catalog?.list?.length) return catalog.list;
-        throw new Error(`Catálogo GVP indisponível (${gvpError.message || gvpError}); fallback oficial USGS indisponível (${fallbackError.message || fallbackError}).`);
-      }
+    } catch (error) {
+      catalogFailedAt = Date.now();
+      if (catalog?.list?.length) return catalog.list;
+      throw error;
     } finally { catalogPromise = null; }
   })();
   return catalogPromise;
@@ -518,217 +492,6 @@ export async function getNews() {
   });
 }
 
-/* ============================ Observatórios nacionais complementares ============================ */
-const htmlAnchors = (html) => [...String(html).matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi)].map((m) => {
-  const href = /href=["']([^"']+)["']/i.exec(m[1])?.[1] || '';
-  const title = /title=["']([^"']+)["']/i.exec(m[1])?.[1] || '';
-  const alt = /alt=["']([^"']+)["']/i.exec(m[2])?.[1] || '';
-  return { href, title: decodeEntities(title), text: cleanHtml(m[2]), alt: decodeEntities(alt), raw: m[0], index: m.index || 0 };
-});
-const absoluteUrl = (href, base) => { try { return new URL(href, base).toString(); } catch { return base; } };
-const parseIsoDate = (value) => {
-  if (!value) return null;
-  const raw = String(value).trim();
-  const iso = raw.match(/(20\d{2})[-/](\d{1,2})[-/](\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
-  if (iso) return Date.UTC(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]), Number(iso[4] || 0), Number(iso[5] || 0), Number(iso[6] || 0));
-  const br = raw.match(/(\d{1,2})[/-](\d{1,2})[/-](20\d{2})/);
-  if (br) return Date.UTC(Number(br[3]), Number(br[2]) - 1, Number(br[1]));
-  return Date.parse(raw) || null;
-};
-const sourceItem = ({ id, ts, date, source, title, url, volcano, text, cats = [], period }) => ({
-  id, ts: ts || Date.now(), date: date || undefined, source, kind: 'OFICIAL', verified: 'CONFIRMADO',
-  title, url, volcanoVn: volcano?.vn ?? null, volcanoName: volcano?.name ?? null, country: volcano?.country ?? null,
-  text: String(text || title || '').slice(0, 1200), cats, ashKm: interpret(String(text || title || '')).ashKm, period,
-});
-
-/** JMA: página oficial de informações recentes e níveis de alerta do Japão. */
-const JMA_ACTIVITY_URL = 'https://www.data.jma.go.jp/vois/data/report/activity_info/index.html';
-const JMA_VOLCANO_NAMES = {
-  '桜島': 'Sakurajima', '十勝岳': 'Tokachidake', '北海道駒ヶ岳': 'Hokkaido-Komagatake',
-  '浅間山': 'Asamayama', '阿蘇山': 'Aso', '霧島山': 'Kirishimayama', '新燃岳': 'Shinmoedake',
-  '諏訪之瀬島': 'Suwanosejima', '西之島': 'Nishinoshima', '硫黄島': 'Ioto',
-  '福徳岡ノ場': 'Fukutoku-Oka-no-Ba', '薩摩硫黄島': 'Satsuma-Iojima', '口永良部島': 'Kuchinoerabujima',
-  '雌阿寒岳': 'Meakan', '焼岳': 'Yakedake', '御嶽山': 'Ontakesan', '草津白根山': 'Kusatsu-Shiranesan',
-};
-export async function getJma() {
-  return cachedFetch('jma-volcano-info', TTL_OBS, async () => {
-    const html = await getHTML(JMA_ACTIVITY_URL, SOURCE_TIMEOUT.jma);
-    const plain = cleanHtml(html);
-    if (!/火山登山者向け|噴火警報|火山情報/.test(plain)) throw new Error('JMA: página oficial não apresentou a seção de informações vulcânicas.');
-    const anchors = htmlAnchors(html);
-    const candidates = [];
-    for (let anchorIndex = 0; anchorIndex < anchors.length; anchorIndex++) {
-      const a = anchors[anchorIndex];
-      // Limita o contexto ao conteúdo entre este link e o próximo para não associar
-      // o nome de um vulcão ao aviso de outro link logo abaixo na página japonesa.
-      const nextIndex = anchors[anchorIndex + 1]?.index ?? html.length;
-      const snippet = cleanHtml(html.slice(a.index, Math.min(nextIndex, a.index + 1100)));
-      const combined = `${a.text} ${a.title} ${a.alt} ${snippet}`;
-      const entry = Object.entries(JMA_VOLCANO_NAMES).find(([jp]) => combined.includes(jp));
-      if (!entry) continue;
-      const [, english] = entry;
-      const volcano = await matchVolcano(`${english} volcano Japan`).catch(() => null);
-      if (!volcano) continue;
-      const dateMatch = combined.match(/(20\d{2})年\s*(\d{1,2})月\s*(\d{1,2})日\s*(\d{1,2})時\s*(\d{1,2})分/);
-      const ts = dateMatch ? Date.parse(`${dateMatch[1]}-${String(dateMatch[2]).padStart(2, '0')}-${String(dateMatch[3]).padStart(2, '0')}T${String(dateMatch[4]).padStart(2, '0')}:${String(dateMatch[5]).padStart(2, '0')}:00+09:00`) : Date.now();
-      const level = Number(/(?:噴火警戒レベル|警戒レベル)\s*(\d)/.exec(combined)?.[1] || 0);
-      const cats = interpret(combined).cats.filter((c) => c !== 'ERUPCAO');
-      if (level >= 2 && !cats.includes('INQUIETACAO')) cats.push('INQUIETACAO');
-      const title = `JMA — ${english}: ${a.text || 'informação vulcânica recente'}`;
-      candidates.push(sourceItem({
-        id: `jma-${volcano.vn}-${ts}-${norm(a.text).slice(0, 24)}`, ts,
-        date: dateMatch ? `${dateMatch[1]}-${String(dateMatch[2]).padStart(2, '0')}-${String(dateMatch[3]).padStart(2, '0')} ${String(dateMatch[4]).padStart(2, '0')}:${String(dateMatch[5]).padStart(2, '0')} JST` : 'Data não identificada no aviso',
-        source: 'JMA', title, url: absoluteUrl(a.href, JMA_ACTIVITY_URL), volcano,
-        text: snippet.slice(0, 900), cats, period: level ? `Nível de alerta JMA ${level}` : 'Informação oficial recente',
-      }));
-    }
-    const deduped = [...new Map(candidates.map((item) => [item.id, item])).values()];
-    return { ok: true, items: deduped, errors: deduped.length ? [] : ['JMA respondeu, mas nenhum aviso recente pôde ser associado com segurança ao catálogo GVP.'] };
-  });
-}
-
-/** INGV: comunicados vulcânicos e VONA oficiais do Osservatorio Etneo. */
-const INGV_PAGES = [
-  { url: 'https://www.ct.ingv.it/sezioniesterne/Comunicati/ComunicatiVulcanici.php', label: 'INGV Comunicati Vulcanici' },
-  { url: 'https://www.ct.ingv.it/sezioniesterne/Comunicati/ComunicatiVonaN.php?I=0', label: 'INGV VONA' },
-];
-export async function getIngv() {
-  return cachedFetch('ingv-official', TTL_OBS, async () => {
-    const results = await Promise.allSettled(INGV_PAGES.map((p) => getHTML(p.url, SOURCE_TIMEOUT.ingv)));
-    const items = []; const errors = []; let success = 0;
-    for (let pageIndex = 0; pageIndex < results.length; pageIndex++) {
-      const result = results[pageIndex]; const page = INGV_PAGES[pageIndex];
-      if (result.status !== 'fulfilled') { errors.push(`${page.label}: ${result.reason?.message || result.reason}`); continue; }
-      const html = result.value;
-      if (!/DATA INVIO|VOLCANO|VONA|COMUNICAT/i.test(html)) { errors.push(`${page.label}: estrutura oficial não reconhecida.`); continue; }
-      success++;
-      const rows = [...html.matchAll(/<tr\b[\s\S]*?<\/tr>/gi)].map((m) => m[0]);
-      for (const row of rows) {
-        const text = cleanHtml(row);
-        const dateRaw = /(20\d{2}-\d{2}-\d{2}\s+\d{2}:\d{2}(?::\d{2})?)/.exec(text)?.[1];
-        if (!dateRaw) continue;
-        const name = /\b(ETNA|STROMBOLI|VULCANO)\b/i.exec(text)?.[1];
-        if (!name) continue;
-        const volcano = await matchVolcano(`${name} volcano Italy`).catch(() => null);
-        if (!volcano) continue;
-        const anchor = htmlAnchors(row)[0];
-        const description = text.replace(dateRaw, '').replace(new RegExp(name, 'i'), '').replace(/DOWNLOAD PDF/ig, '').trim();
-        const ts = Date.parse(`${dateRaw.replace(' ', 'T')}Z`) || Date.now();
-        const url = anchor?.href ? absoluteUrl(anchor.href, page.url) : page.url;
-        const cats = interpret(description).cats.filter((c) => c !== 'ERUPCAO');
-        items.push(sourceItem({
-          id: `ingv-${pageIndex}-${volcano.vn}-${ts}-${norm(description).slice(0, 24)}`,
-          ts, date: `${dateRaw} UTC`, source: page.label,
-          title: `${volcano.name} — ${description || page.label}`, url, volcano,
-          text: description || text, cats, period: pageIndex === 1 ? 'VONA' : 'Comunicado oficial',
-        }));
-      }
-    }
-    return { ok: success > 0, items, errors };
-  });
-}
-
-/** SERNAGEOMIN/OVDAS: snapshot da lista de alertas vulcânicos vigentes no Chile. */
-const SERNAGEOMIN_URL = 'https://www.sernageomin.cl/alertas-volcanicas/';
-export async function getSernageomin() {
-  return cachedFetch('sernageomin-alerts', TTL_OBS, async () => {
-    const html = await getHTML(SERNAGEOMIN_URL, SOURCE_TIMEOUT.sernageomin);
-    const plain = cleanHtml(html);
-    const start = plain.search(/Alertas volc[aá]nicas vigentes/i);
-    if (start < 0) throw new Error('SERNAGEOMIN: seção de alertas vigentes não encontrada na página oficial.');
-    const section = plain.slice(start, start + 9000);
-    const catalogList = await getCatalog().catch(() => []);
-    const chile = catalogList.filter((v) => /chile/i.test(v.country || ''));
-    const items = [];
-    for (const volcano of chile) {
-      const idx = norm(section).indexOf(norm(volcano.name));
-      if (idx < 0) continue;
-      const context = section.slice(Math.max(0, idx - 180), Math.min(section.length, idx + 500));
-      const level = /alerta\s+(roja|naranja|amarilla|verde)/i.exec(context)?.[1];
-      const cats = interpret(context).cats.filter((c) => c !== 'ERUPCAO');
-      items.push(sourceItem({
-        id: `sernageomin-${volcano.vn}-${new Date().toISOString().slice(0, 10)}`,
-        ts: Date.now(), date: `Consulta de alerta vigente em ${new Date().toLocaleDateString('pt-BR')}`,
-        source: 'SERNAGEOMIN / OVDAS', title: `${volcano.name} — alerta vigente${level ? ` ${level}` : ''}`,
-        url: SERNAGEOMIN_URL, volcano, text: context, cats,
-        period: level ? `Alerta ${level}` : 'Lista oficial de alertas vigentes',
-      }));
-    }
-    return { ok: true, items, errors: items.length ? [] : ['SERNAGEOMIN respondeu; nenhum vulcão do catálogo GVP foi identificado na seção de alertas vigentes.'] };
-  });
-}
-
-/** INSIVUMEH: lista oficial de boletins diários, semanais e especiais. */
-const INSIVUMEH_URL = 'https://insivumeh.gob.gt/vulca-boletin-diario/';
-export async function getInsivumeh() {
-  return cachedFetch('insivumeh-bulletins', TTL_OBS, async () => {
-    const html = await getHTML(INSIVUMEH_URL, SOURCE_TIMEOUT.insivumeh);
-    if (!/Boletines de Vulcanolog[ií]a|Bolet[ií]n diario/i.test(cleanHtml(html))) throw new Error('INSIVUMEH: página oficial de boletins não reconhecida.');
-    const anchors = htmlAnchors(html).filter((a) => /\.pdf(?:\?|$)|bolet[ií]n|informe|vulcan/i.test(`${a.href} ${a.text} ${a.title} ${a.alt}`));
-    const catalogList = await getCatalog().catch(() => []);
-    const guatemala = catalogList.filter((v) => /guatemala/i.test(v.country || ''));
-    const items = [];
-    for (const a of anchors.slice(0, 30)) {
-      const label = `${a.text} ${a.title} ${a.alt}`.trim();
-      if (!a.href) continue;
-      const docDate = /(20\d{2}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[/-]\d{1,2}[/-]20\d{2})/.exec(label)?.[1];
-      const ts = parseIsoDate(docDate) || Date.now();
-      const matches = guatemala.filter((v) => norm(label).includes(norm(v.name)) || (norm(v.name) === 'santamaria' && /santiaguito/i.test(label)));
-      // Sem data de publicação não atribuímos o documento a uma atividade atual no carrossel.
-      const linkedVolcanoes = docDate && matches.length ? matches : [null];
-      for (const volcano of linkedVolcanoes) {
-        const docType = /semanal/i.test(label) ? 'Boletim semanal' : /especial/i.test(label) ? 'Boletim especial' : 'Boletim diário';
-        items.push(sourceItem({
-          id: `insivumeh-${norm(a.href).slice(-70)}-${volcano?.vn || 'geral'}`,
-          ts, date: docDate || 'Data de publicação não informada pelo índice', source: 'INSIVUMEH',
-          title: `${volcano?.name ? `${volcano.name} — ` : ''}${docType} de vulcanologia`,
-          url: absoluteUrl(a.href, INSIVUMEH_URL), volcano,
-          text: volcano ? label : 'Documento oficial listado pelo INSIVUMEH. Consulte o boletim original para os detalhes do evento.',
-          cats: [], period: docType,
-        }));
-      }
-    }
-    const unique = [...new Map(items.map((item) => [item.id, item])).values()];
-    return { ok: anchors.length > 0, items: unique, errors: anchors.length ? [] : ['INSIVUMEH respondeu, mas não foram encontrados links de boletins para processar.'] };
-  });
-}
-
-/** BOM publica os avisos recebidos dos nove VAACs globais nas últimas 24 horas. */
-const VAAC_GLOBAL_URL = 'https://www.bom.gov.au/aviation/warnings/volcanic-ash/';
-export async function getGlobalVaac() {
-  return cachedFetch('vaac-global-24h', 5 * 60_000, async () => {
-    const html = await getHTML(VAAC_GLOBAL_URL, SOURCE_TIMEOUT.vaac);
-    const plain = cleanHtml(html);
-    if (!/Volcanic Ash Advisories received in the last 24 hours|VOLCANIC ASH ADVISORIES/i.test(plain)) throw new Error('BOM/VAAC: seção global de avisos de cinzas não encontrada.');
-    const blocks = plain.split(/(?=VA ADVISORY\b)/g).slice(1);
-    const items = [];
-    for (const block of blocks.slice(0, 80)) {
-      const volcanoMatch = /VOLCANO:\s*(.+?)\s+\d{5,7}\b/i.exec(block);
-      const dtg = /DTG:\s*(20\d{6})\/(\d{4})Z/i.exec(block);
-      if (!volcanoMatch || !dtg) continue;
-      const rawName = volcanoMatch[1].replace(/\s*\([^)]*\)\s*/g, ' ').trim();
-      const center = /VAAC:\s*([A-Z ]+)/i.exec(block)?.[1]?.trim() || 'Global';
-      const area = /AREA:\s*([^\r\n]+)/i.exec(block)?.[1]?.trim() || '';
-      const advisory = /ADVISORY NR:\s*([^\r\n]+)/i.exec(block)?.[1]?.trim() || `${dtg[1]}/${dtg[2]}`;
-      const ts = Date.UTC(Number(dtg[1].slice(0, 4)), Number(dtg[1].slice(4, 6)) - 1, Number(dtg[1].slice(6, 8)), Number(dtg[2].slice(0, 2)), Number(dtg[2].slice(2, 4)));
-      const volcano = await matchVolcano(`${rawName} volcano ${area}`).catch(() => null);
-      const detail = /ERUPTION DETAILS:\s*([^\r\n]+)/i.exec(block)?.[1]?.trim() || 'Aviso oficial de cinzas vulcânicas';
-      const obs = /OBS VA CLD:\s*([^\r\n]+)/i.exec(block)?.[1]?.trim() || '';
-      const text = `VAAC ${center}; ${detail}${obs ? `; observação: ${obs}` : ''}; área: ${area}`;
-      const cats = ['CINZAS'];
-      if (isEruptiveText(block)) cats.unshift('ERUPCAO');
-      items.push(sourceItem({
-        id: `vaac-${center.toLowerCase().replace(/\s+/g, '-')}-${volcano?.vn || norm(rawName)}-${norm(advisory)}`,
-        ts, date: new Date(ts).toISOString(), source: `VAAC ${center}`,
-        title: `${volcano?.name || rawName} — aviso de cinzas ${advisory}`,
-        url: VAAC_GLOBAL_URL, volcano, text, cats, period: `VAA ${advisory}`,
-      }));
-    }
-    const unique = [...new Map(items.map((item) => [item.id, item])).values()];
-    return { ok: true, items: unique, errors: unique.length ? [] : ['BOM respondeu; nenhum VAA com nome, data e número de aviso pôde ser interpretado.'] };
-  });
-}
-
 /* ============================ Smithsonian GVP: relatórios completos ============================ */
 const GVP_WEEKLY_PAGE = 'https://volcano.si.edu/reports_weekly.cfm?vtab=feeds';
 const GVP_WEEKLY_RSS = 'https://volcano.si.edu/news/WeeklyVolcanoRSS.xml';
@@ -985,9 +748,22 @@ export async function getGvpBulletins() {
 }
 
 /* ============================ Persistência + agregação ============================ */
-const DATA_FILE = join(__dirname, 'data', 'reports.json');
-function loadStore() { try { return existsSync(DATA_FILE) ? JSON.parse(readFileSync(DATA_FILE, 'utf8')) : { items: [], lastStamp: null }; } catch { return { items: [], lastStamp: null }; } }
-function saveStore(store) { try { mkdirSync(join(__dirname, 'data'), { recursive: true }); writeFileSync(DATA_FILE, JSON.stringify(store)); } catch { /* disco cheio etc. */ } }
+const SEED_DATA_FILE = join(__dirname, 'data', 'reports.json');
+// Vercel Functions têm sistema de arquivos de execução somente leitura, exceto /tmp.
+// Usa o JSON embarcado como semente e /tmp para alterações durante a vida da instância.
+const DATA_FILE = process.env.VERCEL ? '/tmp/geogus-reports.json' : SEED_DATA_FILE;
+function loadStore() {
+  try {
+    const file = existsSync(DATA_FILE) ? DATA_FILE : SEED_DATA_FILE;
+    return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { items: [], lastStamp: null };
+  } catch { return { items: [], lastStamp: null }; }
+}
+function saveStore(store) {
+  try {
+    mkdirSync(dirname(DATA_FILE), { recursive: true });
+    writeFileSync(DATA_FILE, JSON.stringify(store));
+  } catch { /* Vercel pode reciclar /tmp; histórico durável exige armazenamento externo. */ }
+}
 
 let agg = null; // { t, out }
 let reportPromise = null;
@@ -996,11 +772,7 @@ export async function getReports(force = false) {
   if (reportPromise) return reportPromise;
 
   reportPromise = (async () => {
-    // Cada observatório é independente: falha de um host não bloqueia os demais.
-    // cachedFetch aplica TTL, timeout, deduplicação de chamadas e fallback para cache anterior.
-    const [ph, pv, us, news, jmaResult, ingvResult, sernaResult, insivumehResult, vaacResult] = await Promise.allSettled([
-      getPhivolcs(), getPvmbg(), getUsgs(), getNews(), getJma(), getIngv(), getSernageomin(), getInsivumeh(), getGlobalVaac(),
-    ]);
+    const [ph, pv, us, news] = await Promise.allSettled([getPhivolcs(), getPvmbg(), getUsgs(), getNews()]);
     const get = (r) => {
       if (r?.status === 'rejected') return { ok: false, items: [], errors: [String(r.reason?.message ?? r.reason)] };
       const value = r?.status === 'fulfilled' ? r.value : r;
@@ -1008,7 +780,6 @@ export async function getReports(force = false) {
       return { ...body, stale: !!(value?.stale || body?.stale), updatedAt: value?.updatedAt ?? body?.updatedAt, cacheAgeMs: value?.cacheAgeMs ?? body?.cacheAgeMs };
     };
     const phv = get(ph), pvg = get(pv), usg = get(us), nws = get(news);
-    const jma = get(jmaResult), ingv = get(ingvResult), serna = get(sernaResult), insivumeh = get(insivumehResult), vaac = get(vaacResult);
 
     // O GVP é consultado primeiro pelo feed semanal. Se o host devolver 403, o
     // disjuntor evita repetir a mesma falha nos endpoints diário e BGVN nesta rodada.
@@ -1033,11 +804,7 @@ export async function getReports(force = false) {
       gvpB = get(bulletinResult);
     }
 
-    const fresh = [
-      ...(phv.items || []), ...(pvg.items || []), ...(usg.items || []), ...(nws.items || []),
-      ...(jma.items || []), ...(ingv.items || []), ...(serna.items || []), ...(insivumeh.items || []), ...(vaac.items || []),
-      ...(gvpW.items || []), ...(gvpD.items || []), ...(gvpB.items || []),
-    ].filter((x) => !x.error);
+    const fresh = [...(phv.items || []), ...(pvg.items || []), ...(usg.items || []), ...(nws.items || []), ...(gvpW.items || []), ...(gvpD.items || []), ...(gvpB.items || [])].filter((x) => !x.error);
     const store = loadStore();
     for (const it of store.items) {
       if (it.kind === 'NOTICIA') {
@@ -1064,19 +831,9 @@ export async function getReports(force = false) {
       store.items = store.items.filter((i) => (seenIds.has(i.id) ? false : (seenIds.add(i.id), true)));
       saveStore(store);
     }
-    const byId = new Map(store.items.map((item, index) => [item.id, index]));
+    const seen = new Set(store.items.map((i) => i.id));
     let added = 0;
-    for (const it of fresh) {
-      const existingIndex = byId.get(it.id);
-      if (existingIndex === undefined) {
-        byId.set(it.id, store.items.length);
-        store.items.push(it);
-        added++;
-      } else if (Number(it.ts || 0) >= Number(store.items[existingIndex]?.ts || 0)) {
-        // Atualiza o mesmo boletim quando o observatório republica/corrige o conteúdo.
-        store.items[existingIndex] = { ...store.items[existingIndex], ...it };
-      }
-    }
+    for (const it of fresh) if (!seen.has(it.id)) { store.items.push(it); seen.add(it.id); added++; }
     store.items.sort((a, b) => b.ts - a.ts);
     if (store.items.length > 3000) store.items.length = 3000;
     if (added || !store.lastStamp) { store.lastStamp = new Date().toISOString(); saveStore(store); }
@@ -1103,11 +860,6 @@ export async function getReports(force = false) {
       sourceOf('phivolcs', 'PHIVOLCS', phv, phv.updatedAt),
       sourceOf('pvmbg', 'PVMBG', pvg, pvg.updatedAt),
       sourceOf('usgs', 'USGS HANS', usg, usg.updatedAt),
-      sourceOf('jma', 'Japan Meteorological Agency (JMA)', jma, jma.updatedAt),
-      sourceOf('ingv', 'INGV / Osservatorio Etneo', ingv, ingv.updatedAt),
-      sourceOf('sernageomin', 'SERNAGEOMIN / OVDAS', serna, serna.updatedAt),
-      sourceOf('insivumeh', 'INSIVUMEH', insivumeh, insivumeh.updatedAt),
-      sourceOf('vaac', 'VAAC Global (BOM — 9 centros)', vaac, vaac.updatedAt),
       { id: 'gnews', label: 'Notícias (Google News: Reuters/AP/etc.)', ok: !!gnewsStatus.ok, stale: !!nws.stale, stamp: nws.updatedAt || Date.now(), errors: gnewsStatus.errors || [] },
       { id: 'eo', label: 'NASA Earth Observatory', ok: !!nasaStatus.ok, stale: !!nws.stale, stamp: nws.updatedAt || Date.now(), errors: nasaStatus.errors || [] },
       sourceOf('gvp-weekly', 'Smithsonian GVP — Relatório semanal completo / RSS', gvpW, (gvpWResult?.updatedAt)),

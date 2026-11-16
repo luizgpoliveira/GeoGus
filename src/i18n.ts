@@ -43,8 +43,6 @@ const dict = {
   'side.emptyQuakes': { en: 'No data loaded — source unavailable or restrictive filters.', 'pt-BR': 'Sem dados carregados — fonte indisponível ou filtros restritivos.', es: 'Sin datos — fuente no disponible o filtros restrictivos.', de: 'Keine Daten geladen — Quelle nicht verfügbar oder restriktive Filter.' },
   'side.emptyErupting': { en: 'No ongoing eruptions confirmed by GVP right now.', 'pt-BR': 'Nenhuma erupção em curso confirmada pelo GVP neste momento.', es: 'Ninguna erupción en curso confirmada por el GVP ahora.', de: 'Aktuell keine laufenden Ausbrüche gemäß GVP.' },
   'legend.title': { en: 'Legend', 'pt-BR': 'Legenda', es: 'Leyenda', de: 'Legende' },
-  'legend.minimize': { en: 'Minimize legend', 'pt-BR': 'Minimizar legenda', es: 'Minimizar leyenda', de: 'Legende minimieren' },
-  'legend.expand': { en: 'Expand legend', 'pt-BR': 'Expandir legenda', es: 'Expandir leyenda', de: 'Legende erweitern' },
   'legend.erupting': { en: 'Erupting (pulsing)', 'pt-BR': 'Em erupção (pulsa)', es: 'En erupción (pulso)', de: 'Ausbruch (pulsierend)' },
   'legend.active': { en: 'Active volcano', 'pt-BR': 'Vulcão ativo', es: 'Volcán activo', de: 'Aktiver Vulkan' },
   'legend.dormant': { en: 'Dormant', 'pt-BR': 'Dormente', es: 'Durmiendo', de: 'Ruhend' },

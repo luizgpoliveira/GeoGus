@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import L from 'leaflet';
 import 'leaflet.markercluster';
 import 'leaflet/dist/leaflet.css';
@@ -174,7 +174,6 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
   const cbRef = useRef({ onSelectQuake, onSelectVolcano, onKnowMore });
   cbRef.current = { onSelectQuake, onSelectVolcano, onKnowMore };
   const { t, locale } = useI18n();
-  const [legendOpen, setLegendOpen] = useState(true);
 
   useEffect(() => {
     if (!divRef.current || mapRef.current) return;
@@ -267,28 +266,16 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
   return (
     <>
       <div ref={divRef} className="mapview" />
-      <section className={`legend${legendOpen ? '' : ' collapsed'}`} aria-label={t('legend.title')}>
-        <button
-          type="button"
-          className="legend-toggle"
-          aria-expanded={legendOpen}
-          aria-controls="map-legend-content"
-          onClick={() => setLegendOpen((open) => !open)}
-          title={legendOpen ? t('legend.minimize') : t('legend.expand')}
-        >
-          <span>{t('legend.title')}</span>
-          <span className="legend-toggle-icon" aria-hidden="true">{legendOpen ? '−' : '+'}</span>
-        </button>
-        <div id="map-legend-content" className="legend-content" hidden={!legendOpen}>
-            <span><i className="lg tri erup" /> {t('legend.erupting')}</span>
-            <span><i className="lg tri recent" /> {t('legend.recent')}</span>
-            <span><i className="lg tri ativo" /> {t('legend.active')}</span>
-            <span><i className="lg tri dormente" /> {t('legend.dormant')}</span>
-            <span><i className="lg tri extinto" /> {t('legend.extinct')}</span>
-            <span><i className="lg bolt"><svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d={BOLT_PATH} fill="#64d2ff" /></svg></i> {t('legend.quake')}</span>
-            <span className="muted small">{t('pp.source')}: Smithsonian GVP · USGS/EMSC · Esri/OSM</span>
-        </div>
-      </section>
+      <div className="legend">
+        <b>{t('legend.title')}</b>
+        <span><i className="lg tri erup" /> {t('legend.erupting')}</span>
+        <span><i className="lg tri recent" /> {t('legend.recent')}</span>
+        <span><i className="lg tri ativo" /> {t('legend.active')}</span>
+        <span><i className="lg tri dormente" /> {t('legend.dormant')}</span>
+        <span><i className="lg tri extinto" /> {t('legend.extinct')}</span>
+        <span><i className="lg bolt"><svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d={BOLT_PATH} fill="#64d2ff" /></svg></i> {t('legend.quake')}</span>
+        <span className="muted small">{t('pp.source')}: Smithsonian GVP · USGS/EMSC · Esri/OSM</span>
+      </div>
     </>
   );
 }

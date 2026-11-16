@@ -134,69 +134,34 @@ Este arquivo registra o estado da entrega para permitir retomada em outra sessã
 - O script encerra os dois processos quando o usuário para o `npm run dev`.
 - Validação sintática: `node --check scripts/dev.mjs` e leitura do `package.json`.
 
-## Integração de observatórios oficiais adicionais e simplificação visual (16/11/2026)
+## Adaptação para deploy no Vercel (16/11/2026)
 
-### Fontes oficiais adicionadas
+### Diagnóstico
+- O frontend Vite estava sendo publicado como site estático, mas as chamadas `/api/gvp`, `/api/usgs`, `/api/phivolcs`, `/api/pvmbg` e `/api/reports` eram atendidas apenas pelo servidor Node local `server/server.mjs` na porta 8787.
+- O proxy em `vite.config.ts` existe somente no servidor de desenvolvimento Vite e não cria rotas `/api` no deploy. Por isso, o domínio Vercel retornava 404 para todas essas rotas.
 
-1. **JMA — Japan Meteorological Agency:** leitura da página oficial de informações recentes para montanhistas, com associação por nomes japoneses conhecidos ao catálogo global e captura da data/nível quando presentes.
-   - https://www.data.jma.go.jp/vois/data/report/activity_info/index.html
-2. **INGV — Osservatorio Etneo:** leitura dos comunicados vulcânicos e VONA oficiais para Etna, Stromboli e Vulcano, preservando data, descrição e link do documento original.
-   - https://www.ct.ingv.it/sezioniesterne/Comunicati/ComunicatiVulcanici.php
-   - https://www.ct.ingv.it/sezioniesterne/Comunicati/ComunicatiVonaN.php?I=0
-3. **SERNAGEOMIN / OVDAS:** leitura da seção de alertas vulcânicos vigentes do Chile e associação somente a nomes existentes no catálogo global.
-   - https://www.sernageomin.cl/alertas-volcanicas/
-4. **INSIVUMEH:** leitura do índice oficial de boletins diários, semanais e especiais; documentos sem data ou sem nome de vulcão permanecem como atualização genérica e não são usados para afirmar atividade atual de um vulcão específico.
-   - https://insivumeh.gob.gt/vulca-boletin-diario/
-5. **VAAC Global via Bureau of Meteorology (BOM):** leitura dos avisos de cinzas recebidos nas últimas 24 horas dos nove centros VAAC globais. Cada aviso é associado pelo nome/número do vulcão, VAAC emissor, DTG, número do aviso e área, quando identificáveis.
-   - https://www.bom.gov.au/aviation/warnings/volcanic-ash/
+### Implementação
+- Adicionadas Vercel Functions Node.js no diretório raiz `api/`: `gvp.mjs`, `usgs.mjs`, `phivolcs.mjs`, `pvmbg.mjs`, `reports.mjs` e `health.mjs`.
+- `/api/gvp` consulta o WFS oficial do Smithsonian, valida o pedido WFS GetFeature, aplica timeout, deduplicação/cache em memória e devolve JSON.
+- As rotas de observatórios reutilizam os coletores existentes em `server/reports.mjs`, sem duplicar os parsers.
+- `vercel.json` configura `maxDuration` de até 60 segundos e inclui `server/data/reports.json` no pacote das funções.
+- Em Vercel Functions, as alterações do histórico passam a ser gravadas em `/tmp` durante a vida da instância; o arquivo versionado continua sendo a semente. `/tmp` é temporário e não substitui armazenamento persistente.
+- O comando local `npm run dev` e o proxy local do Vite foram preservados pelo projeto `scripts/dev.mjs`.
+- Service worker atualizado para cache v5. `Response.clone()` agora é chamado imediatamente, antes do consumo do corpo da resposta, e respostas HTTP não-OK não são guardadas em cache. Isso corrige o erro `Response body is already used` e evita manter 404s em cache.
 
-As fontes anteriormente existentes foram preservadas: Smithsonian GVP, PHIVOLCS, PVMBG, USGS HANS e NASA/Google News. O BOM é utilizado como agregador oficial de avisos dos nove VAACs; não foi inventado um endpoint para cada centro.
+### Validações executadas
+- `node --check` em todas as funções `api/*.mjs`, arquivos Node `server/*.mjs`, scripts e `public/sw.js` — passou.
+- `vercel.json` e `package.json` validados como JSON — passou.
+- Smoke tests dos handlers Vercel: `/api/health` responde 200 JSON; `/api/gvp` sem parâmetro responde 400 JSON; método POST em GET-only responde 405 — passou.
+- Servidor Node local continuou respondendo `/api/health` — passou.
+- Não foi executado deploy real no Vercel nem verificação live das fontes externas, pois é necessário publicar no projeto do usuário.
+- Build Vite completo não foi executado nesta cópia sem instalação de `node_modules`.
 
-### Resiliência e associação
+### Configuração de deploy
+- A raiz do projeto no Vercel deve ser a pasta que contém `package.json`, `vercel.json` e `api/`.
+- Build Command: `npm run build`.
+- Output Directory: `dist`.
+- Não adicionar rewrites que direcionem `/api/*` para `index.html`.
 
-- Cada observatório adicional é consultado de forma independente em paralelo, com timeout por fonte, cache TTL, deduplicação de chamadas em andamento e fallback para a última resposta válida.
-- A falha de uma fonte não invalida as respostas das demais.
-- O catálogo Smithsonian WFS agora tem fallback para a lista mundial do USGS Volcano API, que é documentada pelo USGS como lista mundial baseada no catálogo GVP. Isso permite associar boletins nacionais quando o WFS do Smithsonian está temporariamente bloqueado.
-- A resposta de catálogo precisa conter ao menos 50 registros reconhecidos para ser aceita; respostas vazias/incompletas acionam o fallback.
-- Itens oficiais são armazenados com fonte, URL, data e texto. Notícias não substituem categorias oficiais quando já existe boletim oficial confirmado para o mesmo vulcão.
-- O índice INSIVUMEH sem data de publicação não cria um card de atividade atual associado a vulcão; permanece, quando identificável, como documento genérico na lista de atualizações.
-- O texto do panorama e os chips de status das fontes continuam sendo calculados e preservados no payload/backend, mas foram removidos da apresentação visual da seção principal.
-
-### Alteração visual
-
-- A seção `ATIVIDADE VULCÂNICA NO MOMENTO` mantém o título, contador e carrossel existente.
-- Foram ocultados o parágrafo longo do panorama, a lista de chips de fontes, o subtítulo do carrossel e o carimbo textual de contagem/IA.
-- Os dados continuam sendo coletados, interpretados e consolidados no backend; somente a apresentação textual foi removida.
-- O carrossel continua sendo alimentado pelos relatórios oficiais e notícias associadas ao número GVP do vulcão.
-- Quando existe relatório oficial confirmado, as categorias visíveis dos cards passam a vir das fontes oficiais; notícias não confirmadas não sobrescrevem a classificação oficial.
-- O corpo da seção não adiciona rolagem vertical própria.
-
-### Validação desta entrega
-
-- `node --check server/reports.mjs` — passou.
-- `node --check server/server.mjs` — passou.
-- `node --check scripts/dev.mjs` — passou.
-- Transpilação sintática de `src/components/Intel.tsx` com TypeScript 5.8.3 — zero diagnósticos.
-- Testes isolados com respostas simuladas confirmaram associação de JMA (Sakurajima/Aso), INGV (Etna/Stromboli), SERNAGEOMIN (Villarrica/Nevados de Chillán), INSIVUMEH (Fuego) e VAAC Darwin (Semeru).
-- Teste de fallback do catálogo: com Smithsonian WFS retornando HTTP 403, o catálogo alternativo USGS foi reconhecido e permitiu associar Sakurajima.
-- Não foram realizadas chamadas reais às fontes externas a partir deste ambiente, pois não há acesso DNS/rede no ambiente de construção. A conectividade real precisa ser conferida na máquina do usuário.
-- Build completo do Vite/React não foi executado porque `node_modules` não está incluído no ZIP. Executar `npm ci` e `npm run build` localmente.
-
-### Limites conhecidos
-
-- A página INSIVUMEH é um índice de documentos. O código associa boletins a vulcões apenas quando o nome está presente no texto/atributos do link e a data é identificável; não baixa nem extrai automaticamente o texto interno de todos os PDFs.
-- INGV e SERNAGEOMIN dependem da estrutura HTML oficial atual. Mudanças nos sites podem exigir ajuste de parser; respostas não reconhecidas são reportadas como fonte indisponível, não como sucesso.
-- JMA publica parte dos avisos em japonês. O parser associa os nomes japoneses mapeados; novos nomes/formatos precisam de aliases adicionais.
-- BOM fornece um agregado dos nove VAACs. O código registra o VAAC emissor de cada aviso e não afirma que todos os centros sempre terão avisos ativos.
-- Outros observatórios nacionais só devem ser adicionados quando houver feed/API/página oficial pública verificável; não existe um endpoint mundial universal e não serão criadas integrações fictícias.
-
-
-## Ajuste — legenda minimizável do mapa (16/11/2026)
-
-- A legenda do mapa agora possui um cabeçalho/botão clicável para minimizar e expandir o conteúdo sem ocultar o mapa ou alterar marcadores.
-- O controle é acessível por teclado, informa `aria-expanded` e mantém o conteúdo associado por `aria-controls`.
-- O estado minimizado deixa visível apenas o botão compacto “Legenda” com sinal de expansão; ao reabrir, todos os itens da legenda retornam.
-- A legenda deixa de ser ocultada automaticamente em telas pequenas; em dispositivos móveis também pode ser minimizada para liberar espaço no mapa.
-- Rótulos e dicas de acessibilidade traduzidos em inglês, português, espanhol e alemão.
-- Alterações limitadas a `src/components/MapView.tsx`, `src/styles.css` e `src/i18n.ts`; coleta, dados, filtros, mapa Leaflet e marcadores não foram modificados.
-- Build completo não executado nesta cópia porque `node_modules` não está instalado. Recomenda-se `npm ci` seguido de `npm run build` no ambiente local.
+### Limitação de persistência
+- As Vercel Functions são stateless e o filesystem de execução é efêmero, exceto `/tmp`. A coleta atual mantém cache e histórico de trabalho enquanto a instância permanece ativa, mas a garantia de histórico cumulativo entre cold starts / instâncias requer storage persistente externo (por exemplo, Vercel Blob ou banco de dados). Nenhum serviço externo foi criado ou configurado automaticamente.

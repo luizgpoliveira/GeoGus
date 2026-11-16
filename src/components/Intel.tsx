@@ -31,12 +31,9 @@ function buildCards(items: ReportItem[], volcanoes: Volcano[]) {
   }>;
   for (const [vn, g] of byVn) {
     const sorted = [...g.items].sort((a, b) => b.ts - a.ts);
-    const official = sorted.find((x) => x.kind === 'OFICIAL' && x.verified === 'CONFIRMADO') ?? null;
+    const official = sorted.find((x) => x.kind === 'OFICIAL') ?? null;
     const latest = official ?? sorted[0];
-    // Quando há boletim oficial, as categorias exibidas vêm somente de fontes oficiais.
-    // Notícias continuam podendo identificar o vulcão, mas não sobrescrevem a classificação oficial.
-    const categoryItems = official ? sorted.filter((x) => x.kind === 'OFICIAL' && x.verified === 'CONFIRMADO') : sorted;
-    const cats = [...new Set(categoryItems.flatMap((x) => x.cats))].filter((c) => CAT_ORDER.includes(c));
+    const cats = [...new Set(sorted.flatMap((x) => x.cats))].filter((c) => CAT_ORDER.includes(c));
     out.push({
       vn,
       name: latest.volcanoName || `vn ${vn}`,
@@ -60,6 +57,7 @@ export default function Intel({ reports, error, volcanoes, onLocate, onOpen }: I
     const recentItems = reports.items.filter((item) => Date.now() - item.ts <= 7 * 24 * 60 * 60 * 1000);
     return buildCards(recentItems, volcanoes);
   }, [reports, volcanoes]);
+  const pano = reports?.panorama;
   const cardsViewportRef = useRef<HTMLDivElement>(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
@@ -99,12 +97,32 @@ export default function Intel({ reports, error, volcanoes, onLocate, onOpen }: I
           <span className="intel-count">{cards.length}</span>
           <span className="intel-chev">{open ? '▾' : '▸'}</span>
         </button>
+        {pano && (
+          <span className="intel-stamp muted small">
+            {t('intel.updated', { time: fmtDT(Date.parse(reports!.stamp) || Date.now(), locale) })}
+            {' · '}{pano.oficials} {t('updates.official').toLowerCase()} + {pano.noticias} {t('updates.news').toLowerCase()}
+            {pano.ai ? ' · IA' : ''}
+          </span>
+        )}
       </div>
-      {open && reports && cards.length > 0 && (
-        <div className="intel-body" aria-label={t('intel.cards')}>
-          {/* O panorama textual e os chips de fontes continuam sendo calculados no backend,
-              mas ficam ocultos na interface. Os mesmos relatórios alimentam os cards abaixo. */}
-          <div className="intel-carousel">
+      {open && (
+        <div className="intel-body">
+          {!reports && <p className="muted small">{error ? `Não foi possível consultar os relatórios: ${error}` : t('intel.noData')}</p>}
+          {reports && (
+            <>
+              <p className="intel-text">{pano?.text}</p>
+              <div className="intel-sources">
+                <span className="muted small">{t('intel.sources')}:</span>
+                {reports.sources.map((s) => (
+                  <span key={s.id} className={`chip ${s.stale ? 'stale' : s.ok ? 'ok' : 'err'}`} title={(s.errors || []).join('; ') || s.label}>
+                    {s.label.split(' (')[0]}{s.stale ? ' · cache' : ''}
+                  </span>
+                ))}
+              </div>
+              {cards.length > 0 && (
+                <>
+                  <div className="intel-sub">{t('intel.cards')} ({cards.length})</div>
+                  <div className="intel-carousel">
                     <button
                       type="button"
                       className="intel-nav"
@@ -164,7 +182,11 @@ export default function Intel({ reports, error, volcanoes, onLocate, onOpen }: I
                       aria-label={t('intel.next')}
                       title={t('intel.next')}
                     >›</button>
-          </div>
+                  </div>
+                </>
+              )}
+            </>
+          )}
         </div>
       )}
     </section>
