@@ -3,6 +3,7 @@ import L from 'leaflet';
 import MapView from './components/MapView';
 import SearchBar, { type Suggestion } from './components/SearchBar';
 import Intel, { UpdatesList } from './components/Intel';
+import { HISTORICAL_GEOLOGY } from './historicalGeology';
 import { VolcanoDetails, QuakeDetails } from './components/Details';
 import type { NotifEntry, Quake, ReportsPayload, Settings, SourceInfo, Volcano } from './types';
 import {
@@ -18,7 +19,7 @@ const POLL_REPORTS = 10 * 60_000;
 
 const DEFAULT_SETTINGS: Settings = {
   minMag: 1.0, alertMag: 5.0, period: 'week', country: '', volcanoFilter: 'erupting',
-  showQuakes: true, showVolcanoes: true,
+  showQuakes: true, showVolcanoes: true, showHistoricalGeology: false,
   quakeAlerts: true, eruptionAlerts: true, browserNotifs: false,
 };
 
@@ -27,7 +28,7 @@ const loadSettings = (): Settings => {
     const saved = JSON.parse(localStorage.getItem('tp.settings') || '{}');
     // A cada nova abertura, começar mostrando somente erupções em andamento.
     // Durante a sessão, o usuário continua livre para selecionar outros filtros.
-    return { ...DEFAULT_SETTINGS, ...saved, volcanoFilter: 'erupting', showVolcanoes: true };
+    return { ...DEFAULT_SETTINGS, ...saved, volcanoFilter: 'erupting', showVolcanoes: true, showHistoricalGeology: false };
   } catch { return DEFAULT_SETTINGS; }
 };
 
@@ -305,9 +306,13 @@ function Shell() {
     } else if (s.kind === 'place') {
       setSelVolcano(null); setSelQuake(null);
       // Ao escolher uma estrutura histórica/localidade, não deixe filtros anteriores ocultarem o ponto.
-      setSettings((prev) => ({ ...prev, country: '', showVolcanoes: true }));
+      const isHistoricalFeature = !!s.id?.startsWith('geo-');
+      setSettings((prev) => ({
+        ...prev, country: '', showVolcanoes: true,
+        ...(isHistoricalFeature ? { showHistoricalGeology: true } : {}),
+      }));
     }
-    setFocus({ lat: s.lat, lon: s.lon, zoom: s.zoom, id: s.id || s.label, kind: s.kind === 'quake' ? 'quake' : s.kind === 'place' ? 'place' : 'volcano', name: s.kind === 'place' ? s.label : undefined });
+    setFocus({ lat: s.lat, lon: s.lon, zoom: s.zoom, id: s.id || s.label, kind: s.kind === 'quake' ? 'quake' : s.kind === 'place' ? 'place' : 'volcano', name: s.kind === 'quake' ? undefined : s.label });
   }, [volcanoes]);
 
   const selectQuake = (q: Quake) => { setSelQuake(q); setSelVolcano(null); setFocus({ lat: q.lat, lon: q.lon, zoom: 6, id: q.id, kind: 'quake' }); };
@@ -344,6 +349,7 @@ function Shell() {
   const countries = useMemo(() => {
     const set = new Set<string>();
     for (const v of volcanoes) set.add(v.country);
+    for (const feature of HISTORICAL_GEOLOGY) set.add(feature.country);
     for (const q of quakes) { const c = q.place?.split(',').pop()?.trim(); if (c && c.length > 2) set.add(c); }
     return [...set].sort((a, b) => a.localeCompare(b, locale));
   }, [volcanoes, quakes, locale]);
@@ -360,6 +366,7 @@ function Shell() {
   const sortedQuakes = useMemo(() => [...quakes].sort((a, b) => b.time - a.time), [quakes]);
   const eruptingList = useMemo(() => volcanoes.filter((v) => v.status === 'ERUPCAO').sort((a, b) => (b.lastEruption ?? 0) - (a.lastEruption ?? 0)), [volcanoes]);
 
+  const historicalCount = HISTORICAL_GEOLOGY.length + volcanoes.filter((v) => !v.holocene).length;
   const unread = notifs.filter((n) => n.kind !== 'sistema').length;
 
   const askBrowserNotifs = async () => {
@@ -463,6 +470,10 @@ function Shell() {
         )}
         <label className="chk"><input type="checkbox" checked={settings.showQuakes} onChange={(e) => upd({ showQuakes: e.target.checked })} /> {t('filters.quakes')}</label>
         <label className="chk"><input type="checkbox" checked={settings.showVolcanoes} onChange={(e) => upd({ showVolcanoes: e.target.checked })} /> {t('filters.volcanoes')}</label>
+        <label className="chk historical-toggle" title="Camada independente: registros do GVP do Pleistoceno e estruturas geológicas antigas; não representa atividade atual.">
+          <input type="checkbox" checked={settings.showHistoricalGeology} onChange={(e) => upd({ showHistoricalGeology: e.target.checked })} />
+          <span className="historical-toggle-symbol">◇</span> Estruturas antigas ({historicalCount.toLocaleString(locale)})
+        </label>
         <button className="btn ghost side-toggle" onClick={() => setShowSide(true)}>{t('filters.panel')}</button>
       </div>
 

@@ -41,7 +41,7 @@ function riskInfo(hazard?: HistoricalHazard) {
 /** Carrossel operacional: somente vulcões cuja erupção em andamento foi confirmada. */
 export default function Intel({ reports, volcanoes, onLocate, onOpen }: IntelProps) {
   const { t, locale } = useI18n();
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const eruptingVolcanoes = useMemo(
     () => volcanoes.filter((v) => v.status === 'ERUPCAO'),
     [volcanoes],

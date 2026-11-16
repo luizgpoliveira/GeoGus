@@ -44,10 +44,17 @@ export default function SearchBar({ volcanoes, quakes, onPick }: Props) {
     const local: Suggestion[] = [];
     for (const v of volcanoes) {
       if (norm(v.name).includes(nq) || norm(v.country).includes(nq)) {
-        local.push({
-          label: v.name, sub: `${t('search.kind.volcano')} · ${v.country}`, kind: 'volcano', lat: v.lat, lon: v.lon,
-          zoom: v.status === 'ERUPCAO' ? 9 : 8, id: 'v' + v.vn, kind2: 'volcano', country: v.country, vn: v.vn,
-        });
+        if (!v.holocene) {
+          local.push({
+            label: v.name, sub: `Vulcão do Pleistoceno · ${v.country}`, kind: 'place', lat: v.lat, lon: v.lon,
+            zoom: 8, id: `geo-gvp-${v.vn}`, country: v.country,
+          });
+        } else {
+          local.push({
+            label: v.name, sub: `${t('search.kind.volcano')} · ${v.country}`, kind: 'volcano', lat: v.lat, lon: v.lon,
+            zoom: v.status === 'ERUPCAO' ? 9 : 8, id: 'v' + v.vn, kind2: 'volcano', country: v.country, vn: v.vn,
+          });
+        }
         if (local.length >= 8) break;
       }
     }

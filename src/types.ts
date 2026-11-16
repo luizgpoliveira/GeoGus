@@ -108,6 +108,8 @@ export interface Settings {
   volcanoFilter: 'all' | 'active' | 'inactive' | 'erupting';
   showQuakes: boolean;
   showVolcanoes: boolean;
+  /** Camada independente de estruturas antigas e vulcões do Pleistoceno. */
+  showHistoricalGeology: boolean;
   quakeAlerts: boolean;
   eruptionAlerts: boolean;
   browserNotifs: boolean;

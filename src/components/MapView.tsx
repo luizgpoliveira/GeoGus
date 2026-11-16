@@ -52,6 +52,44 @@ function historicalGeologyIcon(): L.DivIcon {
   });
 }
 
+function pleistoceneVolcanoPopup(volcano: Volcano): HTMLElement {
+  const root = document.createElement('div');
+  root.className = 'historical-geo-popup';
+  const title = document.createElement('h3');
+  title.textContent = volcano.name;
+  root.appendChild(title);
+  const badge = document.createElement('div');
+  badge.className = 'historical-geo-badge';
+  badge.textContent = 'VULCÃO DO PLEISTOCENO · CAMADA HISTÓRICA · SEM ERUPÇÃO ATUAL CONFIRMADA';
+  root.appendChild(badge);
+  const region = document.createElement('p');
+  region.textContent = volcano.country;
+  root.appendChild(region);
+  const rows: Array<[string, string]> = [
+    ['Período', 'Pleistoceno (aprox. 2,58 milhões a 11.700 anos atrás)'],
+    ['Tipo de estrutura', volcano.type || 'Não informado no registro'],
+    ['Coordenadas', `${volcano.lat.toFixed(4)}, ${volcano.lon.toFixed(4)}`],
+    ['Identificador GVP', String(volcano.vn)],
+  ];
+  for (const [label, value] of rows) {
+    const row = document.createElement('div');
+    row.className = 'historical-geo-row';
+    const strong = document.createElement('strong'); strong.textContent = `${label}: `;
+    const span = document.createElement('span'); span.textContent = value;
+    row.append(strong, span); root.appendChild(row);
+  }
+  const note = document.createElement('p');
+  note.className = 'historical-geo-note';
+  note.textContent = 'O Smithsonian GVP inclui este registro em sua lista de vulcões do Pleistoceno. O próprio GVP informa que essa lista é preliminar e pode conter dados incompletos ou incorretos. A classificação não indica atividade atual. As coordenadas podem representar o centro de um campo vulcânico, não necessariamente uma cratera ou cume.';
+  root.appendChild(note);
+  const source = document.createElement('a');
+  source.href = `https://volcano.si.edu/volcanolist_pleistocene.cfm`;
+  source.target = '_blank'; source.rel = 'noopener noreferrer';
+  source.textContent = 'Fonte: Smithsonian Global Volcanism Program — lista Pleistoceno ↗';
+  root.appendChild(source);
+  return root;
+}
+
 function historicalGeologyPopup(feature: HistoricalGeologyFeature): HTMLElement {
   const root = document.createElement('div');
   root.className = 'historical-geo-popup';
@@ -243,10 +281,10 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
     qCluster.current = L.markerClusterGroup({ maxClusterRadius: 45, showCoverageOnHover: false, chunkedLoading: true });
     vCluster.current = L.markerClusterGroup({ maxClusterRadius: 35, showCoverageOnHover: false, chunkedLoading: true, disableClusteringAtZoom: 9 });
     vClusterFlat.current = L.layerGroup();
-    historicalLayer.current = L.layerGroup();
+    historicalLayer.current = L.markerClusterGroup({ maxClusterRadius: 42, showCoverageOnHover: false, chunkedLoading: true });
     map.addLayer(vCluster.current);
     map.addLayer(vClusterFlat.current);
-    map.addLayer(historicalLayer.current);
+    // A camada histórica começa desligada; o usuário a ativa pela flag independente.
     map.addLayer(qCluster.current);
     setTimeout(() => map.invalidateSize(), 60);
     return () => { document.removeEventListener('click', (map as any)._delegated); map.remove(); mapRef.current = null; historicalLayer.current = null; };
@@ -261,6 +299,8 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
     vClusterFlat.current.clearLayers();
     if (settings.showVolcanoes) {
       for (const v of volcanoes) {
+        // Registros GVP do Pleistoceno aparecem somente na camada histórica dedicada.
+        if (!v.holocene) continue;
         if (settings.country && v.country !== settings.country) continue;
         if (settings.volcanoFilter === 'active' && !(v.status === 'ERUPCAO' || v.status === 'ATIVO')) continue;
         if (settings.volcanoFilter === 'inactive' && (v.status === 'ERUPCAO' || v.status === 'ATIVO')) continue;
@@ -273,15 +313,36 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
     }
   }, [volcanoes, ongoing, settings.showVolcanoes, settings.country, settings.volcanoFilter, t]);
 
-  // Estruturas antigas são uma camada educativa independente: não entram no catálogo
-  // operacional, não recebem status eruptivo e permanecem visíveis no filtro 'erupting'.
+  // Camada histórica independente, desativada por padrão. Inclui o catálogo
+  // preliminar do GVP para o Pleistoceno + estruturas antigas documentadas separadamente.
   useEffect(() => {
+    const map = mapRef.current;
     const group = historicalLayer.current;
-    if (!group) return;
+    if (!map || !group) return;
     group.clearLayers();
-    if (!settings.showVolcanoes) return;
+    if (!settings.showHistoricalGeology) {
+      if (map.hasLayer(group)) map.removeLayer(group);
+      return;
+    }
+    if (!map.hasLayer(group)) map.addLayer(group);
+    for (const volcano of volcanoes) {
+      if (volcano.holocene) continue;
+      if (settings.country && volcano.country !== settings.country) continue;
+      if (!Number.isFinite(volcano.lat) || !Number.isFinite(volcano.lon)) continue;
+      const marker = L.marker([volcano.lat, volcano.lon], {
+        icon: historicalGeologyIcon(),
+        title: volcano.name,
+        alt: 'Vulcão listado pelo Smithsonian GVP no Pleistoceno; sem atividade atual confirmada',
+      });
+      marker.bindPopup(() => pleistoceneVolcanoPopup(volcano), { maxWidth: 350 });
+      group.addLayer(marker);
+    }
     for (const feature of HISTORICAL_GEOLOGY) {
       if (settings.country && feature.country !== settings.country) continue;
+      // Evita duplicar um complexo antigo que também esteja representado no catálogo Pleistoceno do GVP.
+      const representedByGvp = volcanoes.some((volcano) => !volcano.holocene
+        && map.distance([volcano.lat, volcano.lon], [feature.lat, feature.lon]) < 12_000);
+      if (representedByGvp) continue;
       const marker = L.marker([feature.lat, feature.lon], {
         icon: historicalGeologyIcon(),
         title: feature.name,
@@ -290,7 +351,7 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
       marker.bindPopup(() => historicalGeologyPopup(feature), { maxWidth: 340 });
       group.addLayer(marker);
     }
-  }, [settings.showVolcanoes, settings.country]);
+  }, [volcanoes, settings.showHistoricalGeology, settings.country]);
 
   // terremotos
   useEffect(() => {
@@ -324,10 +385,15 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
           if (hit) { marker = hit as L.Marker; break; }
         }
         if (!marker) return;
-        // garante zoom sem cluster (o popup não abre com o marcador agrupado)
+        // Garante que pontos da camada histórica agrupada sejam revelados antes do popup.
         const popupZoom = focus.kind === 'volcano' ? 10 : Math.max(focus.zoom, 7);
-        if (map.getZoom() < popupZoom) map.setView(marker.getLatLng(), popupZoom, { animate: false });
-        marker.openPopup();
+        if (historicalLayer.current && historicalLayer.current.hasLayer(marker)) {
+          const historyCluster = historicalLayer.current as L.MarkerClusterGroup;
+          historyCluster.zoomToShowLayer(marker, () => marker?.openPopup());
+        } else {
+          if (map.getZoom() < popupZoom) map.setView(marker.getLatLng(), popupZoom, { animate: false });
+          marker.openPopup();
+        }
       }, 900);
     }
     return () => { clearTimeout(tm); if (tp) clearTimeout(tp); ring.remove(); };
@@ -343,7 +409,7 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
         <span><i className="lg tri ativo" /> {t('legend.active')}</span>
         <span><i className="lg tri dormente" /> {t('legend.dormant')}</span>
         <span><i className="lg tri extinto" /> {t('legend.extinct')}</span>
-        <span><i className="lg-historical">◇</i> Estrutura geológica histórica (sem atividade atual)</span>
+        {settings.showHistoricalGeology && <span><i className="lg-historical">◇</i> Estruturas antigas / vulcões do Pleistoceno (camada independente)</span>}
         <span><i className="lg bolt"><svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d={BOLT_PATH} fill="#64d2ff" /></svg></i> {t('legend.quake')}</span>
         <span className="muted small">{t('pp.source')}: Smithsonian GVP · USGS/EMSC · Esri/OSM</span>
       </div>

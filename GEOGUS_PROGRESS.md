@@ -201,3 +201,25 @@ Este arquivo registra o estado da entrega para permitir retomada em outra sessÃ
 - Reforçada a exclusão de textos de erupção encerrada/pausada, inclusive variantes em inglês e indonésio, para reduzir falsos positivos.
 - Validações desta entrega: transpile sintático de TS/TSX e `node --check` dos servidores e funções API. Build completo depende de instalar as dependências (`npm ci`), não concluído neste ambiente.
 - Validação de build: `npm run build` não pôde concluir porque o `node_modules` da área de trabalho estava parcial/incompleto e faltavam declarações de tipos de React/Leaflet e dependências auxiliares. O pacote entregue exclui `node_modules`; execute `npm ci` antes de `npm run build`. A transpilação sintática de todos os TS/TSX e a verificação `node --check` dos módulos Node passaram.
+
+
+## Ajustes de camada histórica e carrossel recolhido (16/11/2026)
+
+1. O carrossel `ATIVIDADE VULCÂNICA NO MOMENTO` agora inicia recolhido (`open=false`), deixando o mapa ocupar a tela; o cabeçalho continua disponível para expandir manualmente.
+2. Criada a configuração independente `showHistoricalGeology`, desligada por padrão. Ela não depende de `showVolcanoes` e não mistura estruturas antigas com o mapa operacional.
+3. A camada histórica agora utiliza clustering Leaflet e inclui todos os registros Pleistocenos devolvidos pela camada oficial do Smithsonian GVP (campo `holocene=false`) além dos cinco complexos/províncias regionais mantidos em `src/historicalGeology.ts`. O GVP descreve sua lista Pleistocena como preliminar; isso é informado no popup.
+4. Vulcões Pleistocenos foram removidos dos marcadores operacionais; só aparecem quando a flag `Estruturas antigas` está ligada. A camada permanece desligada por padrão.
+5. Busca de registros antigos ativa a camada histórica ao selecionar um item. Países das cinco estruturas regionais foram incluídos no seletor.
+6. A lista Pleistocena é georreferenciada dinamicamente pelo WFS GVP já utilizado no catálogo; não foram inventados 100 pontos estáticos. O conjunto oficial consultado pelo site contém 1.452 registros, mas o total exibido no app depende da resposta do endpoint.
+
+### Limitações / validação
+- A lista Pleistocena do GVP é preliminar e pode conter dados incompletos/incorretos; cada popup informa essa ressalva.
+- A camada terá mais de 100 pontos quando o endpoint de catálogo carregar corretamente. Se o GVP estiver indisponível, os cinco registros antigos locais permanecem disponíveis.
+- Build completo e validação visual ainda dependem de `npm ci` e `npm run build` no ambiente do projeto.
+
+### Correções adicionais após as capturas de tela
+- A busca de nomes do catálogo Pleistoceno agora ativa a camada histórica e foca o marcador correto; buscas de localidades genéricas não ligam indevidamente a camada.
+- Marcadores da camada Pleistocena usam `zoomToShowLayer` do MarkerCluster para abrir popup mesmo quando estão agrupados.
+- A contagem do toggle é dinâmica: estruturas locais + registros Pleistocenos retornados pelo catálogo GVP.
+
+- A camada histórica aplica deduplicação espacial de 12 km entre registros Pleistocenos GVP e complexos estáticos, reduzindo duplicatas de estruturas já representadas no catálogo.
