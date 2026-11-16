@@ -215,15 +215,16 @@ const RULES = [
   ['GASES', /so2|sulfur dioxide|gas emission|fumarol|emisi gas/i],
   ['ERUPCAO_MODERADA', /moderate.*?(erupt|explosi)|low-level eruption|freatomagmat/i],
   ['INQUIETACAO', /unrest|inquietação|waspada|takut|awas|siaga|advisory/i],
-  // ERUPCAO não vem do texto: só de nível de alerta oficial (evita "eruption threat", "no eruption" etc.)
+  // ERUPCAO exige descrição textual explícita de atividade em andamento.
 ];
-const ACTIVE_ERUPTION = /\berupt(?:ion|ive)?\b[^.]{0,80}\b(ongoing|continues|continuing|underway|in progress|began|started|occurring|erupting)\b|\berupting\b|\bfountaining\b/i;
-const ERUPTION_GAP = /\beruption\b[^.]{0,50}\b(paused|ended|stopped|ceased|no longer|not occurring)\b|\bno eruption\b/i;
+const ACTIVE_ERUPTION = /\b(?:ongoing|continuing|underway|in progress)\b[^.\n]{0,45}\beruption\b|\berupt(?:ion|ive activity)\b[^.\n]{0,90}\b(?:ongoing|continues|continuing|underway|in progress|currently active)\b|\b(?:is|are|remains|continues to be)\s+(?:currently\s+)?erupting\b|\bcurrently erupting\b|\bactively erupting\b|\bfountaining\b[^.\n]{0,45}\b(?:continues|continuing|ongoing|underway)\b|\berupsi\b[^.\n]{0,80}\b(?:sedang berlangsung|masih berlangsung|terus berlangsung|berlanjut)\b|\b(?:sedang|masih)\s+(?:terjadi\s+)?erupsi\b|\bletusan\b[^.\n]{0,80}\b(?:sedang berlangsung|masih berlangsung|terus berlangsung)\b/i;
+const ERUPTION_GAP = /\b(?:no|without|not|ceased|stopped|paused|ended|no longer)\b[^.\n]{0,55}\beruption\b|\b(?:not|no longer|not currently)\s+(?:currently\s+)?erupting\b|\beruption\b[^.\n]{0,65}\b(?:paused|ended|stopped|ceased|no longer|not occurring|not ongoing|has ended)\b|\bfountaining\b[^.\n]{0,35}\b(?:stopped|ceased|ended|not occurring)\b|\b(?:tidak|belum|bukan)\b[^.\n]{0,45}\berupsi\b|\berupsi\b[^.\n]{0,65}\b(?:berakhir|berhenti|selesai|tidak(?:\s+sedang)?\s+berlangsung|tidak lagi berlangsung|telah\s+berhenti)\b|\b(?:letusan|erupsi)\b[^.\n]{0,55}\b(?:sudah berakhir|telah berakhir|tidak berlanjut)\b/i;
 /** Texto oficial descreve erupção em curso (e não pausada/encerrada)? */
 const isEruptiveText = (t) => ACTIVE_ERUPTION.test(t) && !ERUPTION_GAP.test(t);
 function interpret(text) {
   const t = text || '';
   const cats = RULES.filter(([, re]) => re.test(t)).map(([c]) => c);
+  if (isEruptiveText(t) && !cats.includes('ERUPCAO')) cats.unshift('ERUPCAO');
   let ashKm = null;
   const km = t.match(/(?:ash|plume|column|cinza|abu|ceniza|pluma)[^.\n]{0,160}?(\d+(?:[.,]\d+)?)\s*(?:km|kilometers?|kilometres?)\b/i);
   const meters = t.match(/(?:ash|plume|column|cinza|abu|ceniza|pluma)[^.\n]{0,160}?(\d{2,5})\s*(?:m|metros|meters)\b/i)
@@ -279,7 +280,7 @@ export async function getPhivolcs() {
       if (Object.keys(det).length) out.details[name] = det;
       const interpreted = interpret(text.replace(/PHIVOLCS-LAVA:\s*/g, ''));
       interpreted.cats = interpreted.cats.filter((c) => c !== 'ERUPCAO');
-      if (level >= 3) interpreted.cats.unshift('ERUPCAO');
+      if (isEruptiveText(text)) interpreted.cats.unshift('ERUPCAO');
       let volcano = null;
       try { volcano = await matchVolcano(`${name} volcano philippines`); } catch { /* níveis continuam disponíveis sem associação GVP */ }
       if (volcano && date) out.items.push({
@@ -345,7 +346,7 @@ export async function getPvmbg() {
         if (!volcano) continue;
         const ip = interpret(desc);
         ip.cats = ip.cats.filter((c) => c !== 'ERUPCAO');
-        if (/Level (IV|III)/.test(levelText)) ip.cats.unshift('ERUPCAO');
+        if (isEruptiveText(desc)) ip.cats.unshift('ERUPCAO');
         out.items.push({
           id: `pvmbg-${norm(volcano.name)}-${iso}-${norm(String(desc).slice(0, 20))}`, ts: Date.parse(iso) || Date.now(), date: iso,
           source: 'PVMBG', kind: 'OFICIAL', verified: 'CONFIRMADO', title: `${volcano.name} — Laporan Aktivitas (${levelText})`,
@@ -407,7 +408,8 @@ export async function getUsgs() {
       try { volcano = await matchVolcano(`${v.volcano_name} united states volcano`); } catch { /* alerta oficial permanece no painel mesmo sem vínculo GVP */ }
       if (!volcano) return;
       const ip = interpret(text);
-      if (/warning/i.test(String(v.alert_level)) || /red/i.test(String(v.color_code)) || isEruptiveText(text)) ip.cats.unshift('ERUPCAO');
+      // WATCH/WARNING ou código vermelho não provam que a erupção esteja em andamento.
+      if (isEruptiveText(text) && !ip.cats.includes('ERUPCAO')) ip.cats.unshift('ERUPCAO');
       out.items.push({
         id: `usgs-${j.noticeId || vn}-${String(sent).slice(0, 10)}`, ts: Date.parse(String(sent).replace(' ', 'T') + 'Z') || Date.now(),
         date: sent, source: 'USGS', kind: 'OFICIAL', verified: 'CONFIRMADO', title: j.noticeTitle || `${v.volcano_name} update`,
@@ -813,7 +815,7 @@ export async function getReports(force = false) {
         if (ip.ashKm) it.ashKm = ip.ashKm;
         it.verified = SOCIAL_SRC.test(String(it.source || '')) ? 'NAO_CONFIRMADO' : 'REPORTADO';
       } else if (it.source === 'USGS') {
-        const eruptive = /warning|red/i.test(String(it.period || '')) || isEruptiveText(String(it.text || ''));
+        const eruptive = isEruptiveText(String(it.text || '')); // alertas altos não são confirmação de erupção
         it.cats = (it.cats || []).filter((c) => c !== 'ERUPCAO');
         if (eruptive) it.cats.unshift('ERUPCAO');
       }

@@ -17,13 +17,18 @@ const POLL_ERUP = 15 * 60_000;
 const POLL_REPORTS = 10 * 60_000;
 
 const DEFAULT_SETTINGS: Settings = {
-  minMag: 1.0, alertMag: 5.0, period: 'week', country: '', volcanoFilter: 'all',
+  minMag: 1.0, alertMag: 5.0, period: 'week', country: '', volcanoFilter: 'erupting',
   showQuakes: true, showVolcanoes: true,
   quakeAlerts: true, eruptionAlerts: true, browserNotifs: false,
 };
 
 const loadSettings = (): Settings => {
-  try { return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem('tp.settings') || '{}') }; } catch { return DEFAULT_SETTINGS; }
+  try {
+    const saved = JSON.parse(localStorage.getItem('tp.settings') || '{}');
+    // A cada nova abertura, começar mostrando somente erupções em andamento.
+    // Durante a sessão, o usuário continua livre para selecionar outros filtros.
+    return { ...DEFAULT_SETTINGS, ...saved, volcanoFilter: 'erupting', showVolcanoes: true };
+  } catch { return DEFAULT_SETTINGS; }
 };
 
 export default function App() {
@@ -54,7 +59,7 @@ function Shell() {
   const [reportsError, setReportsError] = useState<string | null>(null);
   const [selQuake, setSelQuake] = useState<Quake | null>(null);
   const [selVolcano, setSelVolcano] = useState<Volcano | null>(null);
-  const [focus, setFocus] = useState<{ lat: number; lon: number; zoom: number; id: string; kind: 'quake' | 'volcano'; name?: string } | null>(null);
+  const [focus, setFocus] = useState<{ lat: number; lon: number; zoom: number; id: string; kind: 'quake' | 'volcano' | 'place'; name?: string } | null>(null);
   const [showNotifs, setShowNotifs] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showSide, setShowSide] = useState(false);
@@ -84,6 +89,7 @@ function Shell() {
   /* ---------- Catálogo de vulcões + alertas de observatórios (1x) ---------- */
   const ongoingRef2 = useRef<Map<number, { start: string; end: string | null; vei: number | null }>>(new Map());
   const recentRef = useRef<Set<number>>(new Set());
+  const reportedCurrentEruptionsRef = useRef<Set<number>>(new Set());
   const activeRef = useRef<Set<number>>(new Set());
   const alertsRef = useRef<AlertMaps | undefined>(undefined);
   const eruptingRef = useRef<Set<number>>(new Set());
@@ -96,8 +102,10 @@ function Shell() {
   const withActivity = useCallback((list: Volcano[]) =>
     list.map((v) => (activityRef.current.has(v.vn) ? { ...v, activity: activityRef.current.get(v.vn) } : v)), []);
 
-  const classifyAll = useCallback((ongoing: Set<number>, alerts?: AlertMaps) =>
-    withActivity(volcanoesRef.current.map((v) => classifyVolcano(v, ongoing, activeRef.current, recentRef.current, alerts))), [withActivity]);
+  const classifyAll = useCallback((ongoing: Set<number>, alerts?: AlertMaps) => {
+    const confirmedCurrent = new Set([...ongoing, ...reportedCurrentEruptionsRef.current]);
+    return withActivity(volcanoesRef.current.map((v) => classifyVolcano(v, confirmedCurrent, activeRef.current, recentRef.current, alerts)));
+  }, [withActivity]);
 
   const srcInfo = (id: string, label: string, s: PromiseSettledResult<any>): SourceInfo => {
     if (s.status === 'rejected') return { id, label, ok: false, updated: null, error: String(s.reason?.message ?? s.reason) };
@@ -175,7 +183,8 @@ function Shell() {
           pvmbg: pvmbgR.status === 'fulfilled' ? pvmbgR.value : new Map(),
         } as AlertMaps;
         setObsInfo({ phivolcs: srcInfo('phivolcs', 'PHIVOLCS', phivR), pvmbg: srcInfo('pvmbg', 'PVMBG', pvmbgR), usgs: srcInfo('usgs', 'USGS HANS', hansR) });
-        const list = withActivity(cat.map((v) => classifyVolcano(v, new Set(erup.ongoing.keys()), active, recent, alertsRef.current)));
+        const initialCurrent = new Set([...erup.ongoing.keys(), ...reportedCurrentEruptionsRef.current]);
+        const list = withActivity(cat.map((v) => classifyVolcano(v, initialCurrent, active, recent, alertsRef.current)));
         eruptingRef.current = new Set(list.filter((v) => v.status === 'ERUPCAO').map((v) => v.vn));
         setVolcanoes(list);
         setVolcanoInfo({ id: 'gvp', label: 'Smithsonian GVP', ok: true, updated: Date.now() });
@@ -268,20 +277,37 @@ function Shell() {
     return () => { alive = false; clearInterval(tm); window.removeEventListener('online', onOnline); };
   }, [volcanoInfo.ok]);
 
-  // tags de atividade (48 h) por vulcão, aplicadas aos marcadores/popup/lista
+  // Tags e confirmação de erupções em andamento: somente relatório oficial,
+  // confirmado, recente (48 h) e com texto/registro classificado explicitamente como ERUPCAO.
   useEffect(() => {
     if (!reports) return;
+    const now = Date.now();
     activityRef.current = activityByVolcano(reports.items);
-    setVolcanoes((list) => list.map((v) => (activityRef.current.has(v.vn) ? { ...v, activity: activityRef.current.get(v.vn) } : v)));
-  }, [reports]);
+    reportedCurrentEruptionsRef.current = new Set(reports.items
+      .filter((item) => item.kind === 'OFICIAL'
+        && item.verified === 'CONFIRMADO'
+        && item.volcanoVn != null && item.volcanoVn > 0
+        && item.cats.includes('ERUPCAO')
+        && item.ts <= now + 60 * 60_000
+        && now - item.ts >= -60 * 60_000
+        && now - item.ts <= 48 * 60 * 60_000)
+      .map((item) => Number(item.volcanoVn)));
+    const updated = classifyAll(ongoingRef.current, alertsRef.current);
+    eruptingRef.current = new Set(updated.filter((v) => v.status === 'ERUPCAO').map((v) => v.vn));
+    setVolcanoes(updated);
+  }, [reports, classifyAll]);
 
   /* ---------- Seleção / busca ---------- */
   const pick = useCallback((s: Suggestion) => {
     if (s.kind === 'volcano') {
       const v = volcanoes.find((x) => x.vn === s.vn);
       if (v) { setSelVolcano(v); setSelQuake(null); }
+    } else if (s.kind === 'place') {
+      setSelVolcano(null); setSelQuake(null);
+      // Ao escolher uma estrutura histórica/localidade, não deixe filtros anteriores ocultarem o ponto.
+      setSettings((prev) => ({ ...prev, country: '', showVolcanoes: true }));
     }
-    setFocus({ lat: s.lat, lon: s.lon, zoom: s.zoom, id: s.id || s.label, kind: s.kind === 'quake' ? 'quake' : 'volcano' });
+    setFocus({ lat: s.lat, lon: s.lon, zoom: s.zoom, id: s.id || s.label, kind: s.kind === 'quake' ? 'quake' : s.kind === 'place' ? 'place' : 'volcano', name: s.kind === 'place' ? s.label : undefined });
   }, [volcanoes]);
 
   const selectQuake = (q: Quake) => { setSelQuake(q); setSelVolcano(null); setFocus({ lat: q.lat, lon: q.lon, zoom: 6, id: q.id, kind: 'quake' }); };

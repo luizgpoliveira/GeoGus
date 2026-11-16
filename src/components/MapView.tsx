@@ -7,6 +7,7 @@ import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
 import type { Quake, Volcano, Settings } from '../types';
 import { useI18n } from '../i18n';
 import { commonsImage, GVP_IMAGE_URL } from '../api';
+import { HISTORICAL_GEOLOGY, type HistoricalGeologyFeature } from '../historicalGeology';
 
 export const STATUS_META: Record<string, { color: string }> = {
   ERUPCAO: { color: '#ff3b30' },
@@ -39,6 +40,52 @@ function volcanoIcon(v: Volcano): L.DivIcon {
     iconSize: [size, size],
     iconAnchor: [size / 2, size / 2],
   });
+}
+
+/** Ícone separado: estrutura geológica antiga, não um vulcão em atividade. */
+function historicalGeologyIcon(): L.DivIcon {
+  return L.divIcon({
+    className: 'historical-geo-icon-wrap',
+    html: '<span class="historical-geo-icon" aria-hidden="true">◇</span>',
+    iconSize: [26, 26],
+    iconAnchor: [13, 13],
+  });
+}
+
+function historicalGeologyPopup(feature: HistoricalGeologyFeature): HTMLElement {
+  const root = document.createElement('div');
+  root.className = 'historical-geo-popup';
+  const title = document.createElement('h3');
+  title.textContent = feature.name;
+  root.appendChild(title);
+  const badge = document.createElement('div');
+  badge.className = 'historical-geo-badge';
+  badge.textContent = 'ESTRUTURA GEOLÓGICA HISTÓRICA · SEM ERUPÇÃO ATUAL CONFIRMADA';
+  root.appendChild(badge);
+  const region = document.createElement('p');
+  region.textContent = `${feature.region} · ${feature.country}`;
+  root.appendChild(region);
+  const rows: Array<[string, string]> = [
+    ['Idade / período', feature.age],
+    ['Geologia', feature.geology],
+    ['Localização', feature.locationNote],
+  ];
+  for (const [label, value] of rows) {
+    const row = document.createElement('div');
+    row.className = 'historical-geo-row';
+    const strong = document.createElement('strong'); strong.textContent = `${label}: `;
+    const span = document.createElement('span'); span.textContent = value;
+    row.append(strong, span); root.appendChild(row);
+  }
+  const note = document.createElement('p');
+  note.className = 'historical-geo-note';
+  note.textContent = feature.note;
+  root.appendChild(note);
+  const source = document.createElement('a');
+  source.href = feature.sourceUrl; source.target = '_blank'; source.rel = 'noopener noreferrer';
+  source.textContent = `Fonte científica: ${feature.sourceName} ↗`;
+  root.appendChild(source);
+  return root;
 }
 
 /* ---------- Popups (elementos DOM, traduzidos, com foto) ---------- */
@@ -161,7 +208,7 @@ interface Props {
   onSelectQuake: (q: Quake) => void;
   onSelectVolcano: (v: Volcano) => void;
   onKnowMore: (vn: number) => void;
-  focus: { lat: number; lon: number; zoom: number; id: string; kind: 'quake' | 'volcano'; name?: string } | null;
+  focus: { lat: number; lon: number; zoom: number; id: string; kind: 'quake' | 'volcano' | 'place'; name?: string } | null;
   mapRef: React.MutableRefObject<L.Map | null>;
 }
 
@@ -170,6 +217,7 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
   const qCluster = useRef<L.MarkerClusterGroup | null>(null);
   const vCluster = useRef<L.MarkerClusterGroup | null>(null);
   const vClusterFlat = useRef<L.LayerGroup | null>(null);
+  const historicalLayer = useRef<L.LayerGroup | null>(null);
   const ringRef = useRef<L.Layer | null>(null);
   const cbRef = useRef({ onSelectQuake, onSelectVolcano, onKnowMore });
   cbRef.current = { onSelectQuake, onSelectVolcano, onKnowMore };
@@ -195,11 +243,13 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
     qCluster.current = L.markerClusterGroup({ maxClusterRadius: 45, showCoverageOnHover: false, chunkedLoading: true });
     vCluster.current = L.markerClusterGroup({ maxClusterRadius: 35, showCoverageOnHover: false, chunkedLoading: true, disableClusteringAtZoom: 9 });
     vClusterFlat.current = L.layerGroup();
+    historicalLayer.current = L.layerGroup();
     map.addLayer(vCluster.current);
     map.addLayer(vClusterFlat.current);
+    map.addLayer(historicalLayer.current);
     map.addLayer(qCluster.current);
     setTimeout(() => map.invalidateSize(), 60);
-    return () => { document.removeEventListener('click', (map as any)._delegated); map.remove(); mapRef.current = null; };
+    return () => { document.removeEventListener('click', (map as any)._delegated); map.remove(); mapRef.current = null; historicalLayer.current = null; };
   }, []);
 
   // vulcões — no filtro "Em erupção" os marcadores ficam sempre visíveis (sem cluster)
@@ -223,6 +273,25 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
     }
   }, [volcanoes, ongoing, settings.showVolcanoes, settings.country, settings.volcanoFilter, t]);
 
+  // Estruturas antigas são uma camada educativa independente: não entram no catálogo
+  // operacional, não recebem status eruptivo e permanecem visíveis no filtro 'erupting'.
+  useEffect(() => {
+    const group = historicalLayer.current;
+    if (!group) return;
+    group.clearLayers();
+    if (!settings.showVolcanoes) return;
+    for (const feature of HISTORICAL_GEOLOGY) {
+      if (settings.country && feature.country !== settings.country) continue;
+      const marker = L.marker([feature.lat, feature.lon], {
+        icon: historicalGeologyIcon(),
+        title: feature.name,
+        alt: 'Estrutura geológica histórica, sem atividade atual confirmada',
+      });
+      marker.bindPopup(() => historicalGeologyPopup(feature), { maxWidth: 340 });
+      group.addLayer(marker);
+    }
+  }, [settings.showVolcanoes, settings.country]);
+
   // terremotos
   useEffect(() => {
     const g = qCluster.current; if (!g) return;
@@ -242,21 +311,22 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
     ringRef.current?.remove?.();
     const zoom = focus.kind === 'volcano' ? Math.max(focus.zoom, 10) : focus.zoom;
     map.flyTo([focus.lat, focus.lon], zoom, { duration: 0.8 });
-    const color = focus.kind === 'volcano' ? '#ff9f0a' : '#64d2ff';
+    const color = focus.kind === 'volcano' ? '#ff9f0a' : focus.kind === 'place' ? '#c084fc' : '#64d2ff';
     const ring = L.circleMarker([focus.lat, focus.lon], { radius: 22, color, weight: 3, fill: false, dashArray: '4 5' }).addTo(map);
     ringRef.current = ring;
     const tm = setTimeout(() => { ring.remove(); ringRef.current = null; }, 6000);
     let tp: ReturnType<typeof setTimeout> | undefined;
-    if (focus.kind === 'volcano' && focus.name) {
+    if (focus.kind !== 'quake' && focus.name) {
       tp = setTimeout(() => {
         let marker: L.Marker | null = null;
-        for (const g of [vClusterFlat.current, vCluster.current]) {
+        for (const g of [vClusterFlat.current, vCluster.current, historicalLayer.current]) {
           const hit = (g as L.LayerGroup | null)?.getLayers?.().find((l: any) => l.options?.title === focus.name);
           if (hit) { marker = hit as L.Marker; break; }
         }
         if (!marker) return;
         // garante zoom sem cluster (o popup não abre com o marcador agrupado)
-        if (map.getZoom() < 10) map.setView(marker.getLatLng(), 10, { animate: false });
+        const popupZoom = focus.kind === 'volcano' ? 10 : Math.max(focus.zoom, 7);
+        if (map.getZoom() < popupZoom) map.setView(marker.getLatLng(), popupZoom, { animate: false });
         marker.openPopup();
       }, 900);
     }
@@ -273,6 +343,7 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
         <span><i className="lg tri ativo" /> {t('legend.active')}</span>
         <span><i className="lg tri dormente" /> {t('legend.dormant')}</span>
         <span><i className="lg tri extinto" /> {t('legend.extinct')}</span>
+        <span><i className="lg-historical">◇</i> Estrutura geológica histórica (sem atividade atual)</span>
         <span><i className="lg bolt"><svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d={BOLT_PATH} fill="#64d2ff" /></svg></i> {t('legend.quake')}</span>
         <span className="muted small">{t('pp.source')}: Smithsonian GVP · USGS/EMSC · Esri/OSM</span>
       </div>

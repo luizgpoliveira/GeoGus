@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReportItem, ReportsPayload, Volcano } from '../types';
+import { GVP_PAGE, loadHistoricalHazards, type HistoricalHazard } from '../api';
 import { useI18n } from '../i18n';
 import VolcanoPhoto from './VolcanoPhoto';
 
@@ -16,48 +17,70 @@ interface IntelProps {
   onOpen: (vn: number) => void;
 }
 
-/** Cards consolidados por vulcão a partir dos relatórios (oficiais primeiro). */
-function buildCards(items: ReportItem[], volcanoes: Volcano[]) {
-  const byVn = new Map<number, { items: ReportItem[] }>();
-  for (const it of items) {
-    if (!it.volcanoVn) continue;
-    const g = byVn.get(it.volcanoVn) ?? { items: [] };
-    g.items.push(it);
-    byVn.set(it.volcanoVn, g);
-  }
-  const out = [] as Array<{
-    vn: number; name: string; country: string; latest: ReportItem; official: ReportItem | null;
-    cats: string[]; volcano: Volcano | undefined;
-  }>;
-  for (const [vn, g] of byVn) {
-    const sorted = [...g.items].sort((a, b) => b.ts - a.ts);
-    const official = sorted.find((x) => x.kind === 'OFICIAL') ?? null;
-    const latest = official ?? sorted[0];
-    const cats = [...new Set(sorted.flatMap((x) => x.cats))].filter((c) => CAT_ORDER.includes(c));
-    out.push({
-      vn,
-      name: latest.volcanoName || `vn ${vn}`,
-      country: latest.country || '—',
-      latest, official, cats,
-      volcano: volcanoes.find((v) => v.vn === vn),
-    });
-  }
-  // erupção primeiro, depois atividade oficial recente, depois notícias
-  const w = (c: typeof out[number]) => (c.volcano?.status === 'ERUPCAO' ? 0 : c.official ? 1 : 2);
-  return out.sort((a, b) => w(a) - w(b) || b.latest.ts - a.latest.ts);
+interface ActiveCard {
+  volcano: Volcano;
+  latest?: ReportItem;
+  cats: string[];
+  hazard?: HistoricalHazard;
 }
 
-export default function Intel({ reports, error, volcanoes, onLocate, onOpen }: IntelProps) {
+function riskInfo(hazard?: HistoricalHazard) {
+  if (!hazard || hazard.maxVei == null || !Number.isFinite(hazard.maxVei)) {
+    return {
+      key: 'unknown', label: 'Histórico não classificado',
+      note: 'Sem VEI máximo confiável no histórico Holoceno consultado do Smithsonian GVP; não é possível atribuir uma faixa.', rank: -1,
+    };
+  }
+  const vei = hazard.maxVei;
+  if (vei >= 6) return { key: 'extreme', label: 'Extremamente perigoso · histórico', note: `Faixa visual GeoGus baseada no maior VEI (${vei}) no histórico Holoceno do GVP. Não é avaliação de risco atual, exposição ou previsão.`, rank: 4 };
+  if (vei >= 4) return { key: 'high', label: 'Perigoso · histórico', note: `Faixa visual GeoGus baseada no maior VEI (${vei}) no histórico Holoceno do GVP. Não é avaliação de risco atual, exposição ou previsão.`, rank: 3 };
+  if (vei >= 2) return { key: 'moderate', label: 'Moderado · histórico', note: `Faixa visual GeoGus baseada no maior VEI (${vei}) no histórico Holoceno do GVP. Não é avaliação de risco atual, exposição ou previsão.`, rank: 2 };
+  return { key: 'low', label: 'Tranquilo · histórico', note: `Maior VEI documentado: ${vei}. Indica menor explosividade registrada no histórico consultado, não ausência de outros perigos nem garantia de segurança.`, rank: 1 };
+}
+
+/** Carrossel operacional: somente vulcões cuja erupção em andamento foi confirmada. */
+export default function Intel({ reports, volcanoes, onLocate, onOpen }: IntelProps) {
   const { t, locale } = useI18n();
   const [open, setOpen] = useState(true);
-  const cards = useMemo(() => {
-    if (!reports) return [];
-    // Boletins BGVN podem cobrir meses/anos anteriores: eles ficam em ATUALIZAÇÕES
-    // e no histórico, mas não devem aparecer como atividade do momento nos cards.
-    const recentItems = reports.items.filter((item) => Date.now() - item.ts <= 7 * 24 * 60 * 60 * 1000);
-    return buildCards(recentItems, volcanoes);
-  }, [reports, volcanoes]);
-  const pano = reports?.panorama;
+  const eruptingVolcanoes = useMemo(
+    () => volcanoes.filter((v) => v.status === 'ERUPCAO'),
+    [volcanoes],
+  );
+  const eruptingKey = useMemo(
+    () => eruptingVolcanoes.map((v) => v.vn).sort((a, b) => a - b).join(','),
+    [eruptingVolcanoes],
+  );
+  const [hazards, setHazards] = useState<Map<number, HistoricalHazard>>(new Map());
+
+  useEffect(() => {
+    if (!eruptingKey) { setHazards(new Map()); return; }
+    let alive = true;
+    const ids = eruptingKey.split(',').map(Number);
+    loadHistoricalHazards(ids)
+      .then((data) => { if (alive) setHazards(data); })
+      .catch(() => { /* o carrossel continua; mostra histórico sem classificação até nova tentativa */ });
+    return () => { alive = false; };
+  }, [eruptingKey]);
+
+  const cards = useMemo<ActiveCard[]>(() => {
+    const now = Date.now();
+    const list = eruptingVolcanoes.map((volcano) => {
+      const latest = (reports?.items || [])
+        .filter((item) => item.volcanoVn === volcano.vn
+          && item.kind === 'OFICIAL'
+          && item.verified === 'CONFIRMADO'
+          && item.ts <= now + 60 * 60_000
+          && now - item.ts <= 7 * 24 * 60 * 60_000)
+        .sort((a, b) => b.ts - a.ts)[0];
+      const cats = [...new Set(['ERUPCAO', ...(volcano.activity || []), ...(latest?.cats || [])])]
+        .filter((cat) => CAT_ORDER.includes(cat));
+      return { volcano, latest, cats, hazard: hazards.get(volcano.vn) };
+    });
+    return list.sort((a, b) => riskInfo(b.hazard).rank - riskInfo(a.hazard).rank
+      || (b.hazard?.maxVei ?? -1) - (a.hazard?.maxVei ?? -1)
+      || a.volcano.name.localeCompare(b.volcano.name));
+  }, [eruptingVolcanoes, reports, hazards]);
+
   const cardsViewportRef = useRef<HTMLDivElement>(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
@@ -65,22 +88,17 @@ export default function Intel({ reports, error, volcanoes, onLocate, onOpen }: I
   useEffect(() => {
     const viewport = cardsViewportRef.current;
     if (!viewport) return;
-
     const updateNavigation = () => {
       const maxScroll = viewport.scrollWidth - viewport.clientWidth;
       setCanScrollLeft(viewport.scrollLeft > 2);
       setCanScrollRight(maxScroll > 2 && viewport.scrollLeft < maxScroll - 2);
     };
-
     updateNavigation();
     viewport.addEventListener('scroll', updateNavigation, { passive: true });
     const observer = new ResizeObserver(updateNavigation);
     observer.observe(viewport);
     if (viewport.firstElementChild) observer.observe(viewport.firstElementChild);
-    return () => {
-      viewport.removeEventListener('scroll', updateNavigation);
-      observer.disconnect();
-    };
+    return () => { viewport.removeEventListener('scroll', updateNavigation); observer.disconnect(); };
   }, [cards.length, open]);
 
   const scrollCards = (direction: -1 | 1) => {
@@ -97,96 +115,49 @@ export default function Intel({ reports, error, volcanoes, onLocate, onOpen }: I
           <span className="intel-count">{cards.length}</span>
           <span className="intel-chev">{open ? '▾' : '▸'}</span>
         </button>
-        {pano && (
-          <span className="intel-stamp muted small">
-            {t('intel.updated', { time: fmtDT(Date.parse(reports!.stamp) || Date.now(), locale) })}
-            {' · '}{pano.oficials} {t('updates.official').toLowerCase()} + {pano.noticias} {t('updates.news').toLowerCase()}
-            {pano.ai ? ' · IA' : ''}
-          </span>
-        )}
       </div>
-      {open && (
-        <div className="intel-body">
-          {!reports && <p className="muted small">{error ? `Não foi possível consultar os relatórios: ${error}` : t('intel.noData')}</p>}
-          {reports && (
-            <>
-              <p className="intel-text">{pano?.text}</p>
-              <div className="intel-sources">
-                <span className="muted small">{t('intel.sources')}:</span>
-                {reports.sources.map((s) => (
-                  <span key={s.id} className={`chip ${s.stale ? 'stale' : s.ok ? 'ok' : 'err'}`} title={(s.errors || []).join('; ') || s.label}>
-                    {s.label.split(' (')[0]}{s.stale ? ' · cache' : ''}
-                  </span>
-                ))}
-              </div>
-              {cards.length > 0 && (
-                <>
-                  <div className="intel-sub">{t('intel.cards')} ({cards.length})</div>
-                  <div className="intel-carousel">
-                    <button
-                      type="button"
-                      className="intel-nav"
-                      onClick={() => scrollCards(-1)}
-                      disabled={!canScrollLeft}
-                      aria-label={t('intel.previous')}
-                      title={t('intel.previous')}
-                    >‹</button>
-                    <div className="intel-cards" ref={cardsViewportRef}>
-                    {cards.map((c) => {
-                      const status = c.volcano?.status;
-                      const alert = c.volcano?.alertInfo;
-                      const cats = c.cats.slice(0, 4);
-                      return (
-                        <article key={c.vn} className={`icard ${status === 'ERUPCAO' ? 'erupting' : ''}`}>
-                          <div className="icard-photo">
-                            <VolcanoPhoto vn={c.vn} name={c.name} gvpFile={c.volcano?.image?.file} />
-                          </div>
-                          <div className="icard-body">
-                            <h4>{c.name} <span className="icard-country">{c.country}</span></h4>
-                            <div className="icard-status">
-                              {status && <span className={`badge ${status === 'ERUPCAO' ? 'live' : 'status'}`}>{t(`status.${status}`)}</span>}
-                              {alert && (
-                                <span className="icard-alert">{alert.source} · {String(alert.level)}{alert.colorCode ? ` · ${alert.colorCode}` : ''}</span>
-                              )}
-                            </div>
-                            {cats.length > 0 && (
-                              <div className="icard-cats">{cats.map((k) => <span key={k} className={`tag cat-${k}`}>{t(`cat.${k}` as any)}</span>)}</div>
-                            )}
-                            <p className="icard-sum"><span className="muted small">{t('intel.lastEvent')}: </span>{String(c.latest.title)}</p>
-                            {c.latest.text && c.latest.text !== c.latest.title && (
-                              <p className="icard-text">{String(c.latest.text).slice(0, 180)}</p>
-                            )}
-                            <div className="icard-meta">
-                              <span className={`kind ${c.latest.kind === 'OFICIAL' ? 'oficial' : 'noticia'}`}>
-                                {c.latest.kind === 'OFICIAL' ? t('updates.official') : t('updates.news')}
-                              </span>
-                              {' '}{c.latest.url
-                                ? <a className="intel-source-link" href={c.latest.url} target="_blank" rel="noopener noreferrer" title={c.latest.source}>{c.latest.source}</a>
-                                : c.latest.source}
-                              {' · '}{c.latest.date ? String(c.latest.date) : fmtDT(c.latest.ts, locale)}
-                            </div>
-                            <div className="icard-actions">
-                              <button className="btn" onClick={() => onLocate(c.vn)}>{t('intel.locate')}</button>
-                              <button className="btn ghost" onClick={() => onOpen(c.vn)}>{t('intel.more')}</button>
-                            </div>
-                          </div>
-                        </article>
-                      );
-                    })}
-                    </div>
-                    <button
-                      type="button"
-                      className="intel-nav"
-                      onClick={() => scrollCards(1)}
-                      disabled={!canScrollRight}
-                      aria-label={t('intel.next')}
-                      title={t('intel.next')}
-                    >›</button>
-                  </div>
-                </>
-              )}
-            </>
-          )}
+      {open && cards.length > 0 && (
+        <div className="intel-body intel-body-carousel-only">
+          <div className="intel-carousel">
+            <button type="button" className="intel-nav" onClick={() => scrollCards(-1)} disabled={!canScrollLeft} aria-label={t('intel.previous')} title={t('intel.previous')}>‹</button>
+            <div className="intel-cards" ref={cardsViewportRef}>
+                {cards.map((card) => {
+                  const v = card.volcano;
+                  const alert = v.alertInfo;
+                  const risk = riskInfo(card.hazard);
+                  const latest = card.latest;
+                  const profileUrl = GVP_PAGE(v.vn);
+                  return (
+                    <article key={v.vn} className="icard erupting">
+                      <div className="icard-photo"><VolcanoPhoto vn={v.vn} name={v.name} gvpFile={v.image?.file} /></div>
+                      <div className="icard-body">
+                        <h4>{v.name} <span className="icard-country">{v.country}</span></h4>
+                        <div className="icard-status">
+                          <span className="badge live">{t('status.ERUPCAO')}</span>
+                          <span className={`risk-badge risk-${risk.key}`} title={risk.note}>{risk.label}{card.hazard?.maxVei != null ? ` · VEI ${card.hazard.maxVei}` : ''}</span>
+                          {alert && <span className="icard-alert">{alert.source} · {String(alert.level)}{alert.colorCode ? ` · ${alert.colorCode}` : ''}</span>}
+                        </div>
+                        {card.cats.length > 0 && <div className="icard-cats">{card.cats.slice(0, 4).map((k) => <span key={k} className={`tag cat-${k}`}>{t(`cat.${k}` as any)}</span>)}</div>}
+                        <p className="icard-sum"><span className="muted small">{t('intel.lastEvent')}: </span>{latest?.title || 'Erupção em andamento registrada no catálogo vulcânico.'}</p>
+                        {latest?.text && latest.text !== latest.title && <p className="icard-text">{String(latest.text).slice(0, 180)}</p>}
+                        <div className="icard-meta">
+                          <span className="kind oficial">CONFIRMADO</span>
+                          {' '}{latest?.url
+                            ? <a className="intel-source-link" href={latest.url} target="_blank" rel="noopener noreferrer" title={latest.source}>{latest.source}</a>
+                            : <a className="intel-source-link" href={profileUrl} target="_blank" rel="noopener noreferrer">Smithsonian GVP</a>}
+                          {' · '}{latest?.date ? String(latest.date) : 'Registro de erupção em andamento'}
+                        </div>
+                        <div className="icard-actions">
+                          <button className="btn" onClick={() => onLocate(v.vn)}>{t('intel.locate')}</button>
+                          <button className="btn ghost" onClick={() => onOpen(v.vn)}>{t('intel.more')}</button>
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
+            </div>
+            <button type="button" className="intel-nav" onClick={() => scrollCards(1)} disabled={!canScrollRight} aria-label={t('intel.next')} title={t('intel.next')}>›</button>
+          </div>
         </div>
       )}
     </section>

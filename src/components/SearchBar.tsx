@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Quake, Volcano } from '../types';
 import { nominatimSearch } from '../api';
 import { useI18n } from '../i18n';
+import { HISTORICAL_GEOLOGY } from '../historicalGeology';
 
 export interface Suggestion {
   label: string;
@@ -54,6 +55,17 @@ export default function SearchBar({ volcanoes, quakes, onPick }: Props) {
       if (k.place && norm(k.place).includes(nq)) {
         local.push({ label: `M ${k.mag.toFixed(1)} — ${k.place}`, sub: `${t('side.tab.quakes').slice(0, 1).toUpperCase() + t('side.tab.quakes').slice(1)} · ${new Date(k.time).toLocaleDateString(locale)}`, kind: 'quake', lat: k.lat, lon: k.lon, zoom: 7, id: k.id, kind2: 'quake' });
         if (local.filter((x) => x.kind === 'quake').length >= 5) break;
+      }
+    }
+    for (const feature of HISTORICAL_GEOLOGY) {
+      const terms = [feature.name, feature.region, ...(feature.aliases || [])];
+      if (terms.some((value) => norm(value).includes(nq))) {
+        local.push({
+          label: feature.name,
+          sub: `Estrutura geológica histórica · ${feature.region}`,
+          kind: 'place', lat: feature.lat, lon: feature.lon, zoom: 8,
+          id: `geo-${feature.id}`,
+        });
       }
     }
     setItems(local);

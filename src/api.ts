@@ -98,20 +98,14 @@ export function classifyVolcano(
   const pvmbg = obsByName(alerts?.pvmbg, v.name);
   if (pvmbg) obs.push(pvmbg);
 
-  const lvl = (a?: AlertInfo) => Number(a?.level ?? -1);
-  // Erupção confirmada por observatório: PHIVOLCS ≥3, PVMBG ≥3 (III inclui "mengalami erupsi"), USGS WARNING/WATCH
-  const obsErupting = obs.some((a) =>
-    a.source === 'USGS' ? a.level === 'WARNING' || a.level === 'WATCH' : lvl(a) >= 3);
-  // Contradição do observatório rebaixa o flag (às vezes defasado) do GVP:
-  // PHIVOLCS ≤2 ou USGS NORMAL/ADVISORY → não está em erupção
-  const obsContradicts = obs.some((a) =>
-    a.source === 'USGS' ? a.level === 'NORMAL' || a.level === 'ADVISORY' : lvl(a) <= 2);
-  // alertInfo: prioriza a fonte de erupção; senão a primeira disponível
-  const alertInfo = obs.find((a) => obsErupting && (a.source === 'USGS'
-    ? a.level === 'WARNING' || a.level === 'WATCH' : lvl(a) >= 3)) ?? obs[0];
+  // Nível de alerta não é, por si só, confirmação de erupção.
+  // USGS WATCH/WARNING, PHIVOLCS 3/4 e PVMBG III/IV indicam perigo/alerta,
+  // mas só classificamos erupção quando o GVP marca atividade contínua ou
+  // quando um boletim oficial recente descreve explicitamente erupção em curso.
+  const alertInfo = obs[0];
 
   let status: VolcanoStatus = 'INDEFINIDO';
-  if (obsErupting || (ongoingVNs.has(v.vn) && !obsContradicts)) status = 'ERUPCAO';
+  if (ongoingVNs.has(v.vn)) status = 'ERUPCAO';
   else if (recentVNs.has(v.vn)) status = 'RECENTE';
   else if (!v.holocene) status = 'EXTINTO';
   else if (activeVNs.has(v.vn) || (v.lastEruption != null && v.lastEruption >= new Date().getFullYear() - 50)) status = 'ATIVO';
@@ -306,6 +300,78 @@ export async function loadVolcanoEruptions(vn: number): Promise<VolcanoHistory> 
   const first = list.length ? list[list.length - 1].start.slice(0, 4) : null;
   const last = list.length ? list[0].start : null;
   return { list, stamp: j.timeStamp ?? null, first, last };
+}
+
+export interface HistoricalHazard {
+  maxVei: number | null;
+  eventCount: number;
+  stamp: number;
+}
+
+const HAZARD_CACHE_KEY = 'tp.gvp.historical-hazards.v1';
+const HAZARD_TTL = 24 * 60 * 60_000;
+const hazardCache = new Map<number, HistoricalHazard>();
+let hazardCacheLoaded = false;
+let hazardFlight: Promise<Map<number, HistoricalHazard>> | null = null;
+
+function hydrateHazardCache() {
+  if (hazardCacheLoaded) return;
+  hazardCacheLoaded = true;
+  try {
+    const stored = JSON.parse(localStorage.getItem(HAZARD_CACHE_KEY) || '{}') as Record<string, HistoricalHazard>;
+    for (const [key, value] of Object.entries(stored)) {
+      if (value && Number.isFinite(value.stamp) && Date.now() - value.stamp < HAZARD_TTL) {
+        const maxVei = value.maxVei != null && Number.isFinite(Number(value.maxVei)) ? Number(value.maxVei) : null;
+        hazardCache.set(Number(key), { maxVei, eventCount: Number.isFinite(value.eventCount) ? value.eventCount : 0, stamp: value.stamp });
+      }
+    }
+  } catch { /* cache local opcional */ }
+}
+
+/** Consulta compacta e compartilhada do VEI máximo histórico para os vulcões em erupção. */
+export async function loadHistoricalHazards(vns: number[]): Promise<Map<number, HistoricalHazard>> {
+  hydrateHazardCache();
+  const ids = [...new Set(vns.map(Number).filter((id) => Number.isFinite(id) && id > 0))];
+  if (!ids.length) return new Map();
+  const missing = ids.filter((id) => !hazardCache.has(id));
+  if (missing.length && !hazardFlight) {
+    hazardFlight = (async () => {
+      for (let offset = 0; offset < missing.length; offset += 60) {
+        const batch = missing.slice(offset, offset + 60);
+        const j = await gvpQuery({
+          typeNames: ER_HOL_LAY,
+          count: '5000',
+          propertyName: 'Volcano_Number,ExplosivityIndexMax',
+          cql_filter: `Volcano_Number IN (${batch.join(',')})`,
+        });
+        const grouped = new Map<number, { maxVei: number | null; eventCount: number }>();
+        for (const feature of j.features ?? []) {
+          const props = feature.properties || {};
+          const id = Number(props.Volcano_Number);
+          if (!batch.includes(id)) continue;
+          const veiValue = num(props.ExplosivityIndexMax);
+          const vei = veiValue != null && Number.isFinite(veiValue) ? veiValue : null;
+          const current = grouped.get(id) ?? { maxVei: null, eventCount: 0 };
+          current.eventCount += 1;
+          if (vei != null && (current.maxVei == null || vei > current.maxVei)) current.maxVei = vei;
+          grouped.set(id, current);
+        }
+        const stamp = Date.now();
+        for (const id of batch) {
+          const value = { ...(grouped.get(id) ?? { maxVei: null, eventCount: 0 }), stamp };
+          hazardCache.set(id, value);
+        }
+      }
+      try { localStorage.setItem(HAZARD_CACHE_KEY, JSON.stringify(Object.fromEntries(hazardCache))); } catch { /* quota/private mode */ }
+      return new Map(hazardCache);
+    })().finally(() => { hazardFlight = null; });
+  }
+  if (missing.length && hazardFlight) {
+    try { await hazardFlight; } catch (error) {
+      if (!ids.every((id) => hazardCache.has(id))) throw error;
+    }
+  }
+  return new Map(ids.filter((id) => hazardCache.has(id)).map((id) => [id, hazardCache.get(id)!]));
 }
 
 /* ============================ Terremotos ============================ */
