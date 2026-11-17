@@ -1,10 +1,25 @@
 // Service worker do GeoGus: app-shell cache-first, dados/tiles network-first.
-// v5 corrige Response.clone() tardio e remove caches antigos que podiam guardar 404s.
-const SHELL = 'gg-shell-v6';
-const DATA = 'gg-data-v6';
+// v8 atualiza a interface móvel, marcadores pulsantes e melhora a invalidação dos assets.
+const SHELL = 'gg-shell-v8';
+const DATA = 'gg-data-v8';
 
 self.addEventListener('message', (event) => {
   if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const target = event.notification.data?.url || '/';
+  event.waitUntil((async () => {
+    const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const appClient = windows.find((client) => client.url.startsWith(self.location.origin));
+    if (appClient && target.startsWith('/')) {
+      await appClient.focus();
+      if ('navigate' in appClient) await appClient.navigate(new URL(target, self.location.origin).href);
+      return;
+    }
+    await self.clients.openWindow(target.startsWith('http') ? target : new URL(target, self.location.origin).href);
+  })());
 });
 
 self.addEventListener('install', (event) => {
@@ -41,6 +56,12 @@ async function fetchAndCache(request, cacheName) {
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== 'GET') return;
+
+  // CAP de tsunami contém alertas/cancelamentos operacionais: nunca devolver cache antigo.
+  if (url.origin === self.location.origin && url.pathname === '/api/tsunami') {
+    event.respondWith(fetch(event.request, { cache: 'no-store' }));
+    return;
+  }
 
   if (url.origin === self.location.origin && (url.pathname.startsWith('/api/') || url.pathname.startsWith('/assets/'))) {
     event.respondWith(fetchAndCache(event.request, DATA).catch(async () => {

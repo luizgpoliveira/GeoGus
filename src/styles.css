@@ -103,17 +103,31 @@ h2 { font-size: 17px; } h3 { font-size: 13px; text-transform: uppercase; letter-
 .badge.mag { background: var(--panel2); color: var(--muted); }
 .badge.live { background: var(--red); color: #fff; margin-left: 4px; }
 
-/* marcadores */
-.volc-icon-wrap { background: transparent; border: none; }
-.volc-icon { width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; }
-.volc-icon .tri { width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 11px solid var(--c, #8e8e93); filter: drop-shadow(0 0 2px rgba(0,0,0,.8)); }
-.volc-icon.erupting { animation: pulse 1.6s ease-out infinite; border-radius: 50%; }
-.volc-icon svg { filter: drop-shadow(0 0 2px rgba(0,0,0,.8)); }
+/* Marcadores geográficos: ícone + anéis de pulsação independentes. */
+.volc-icon-wrap, .quake-icon-wrap { background: transparent; border: 0; overflow: visible; }
+.volc-icon-wrap, .quake-icon-wrap { display: flex; align-items: center; justify-content: center; }
+.volc-icon, .quake-icon { position: relative; width: var(--marker-size, 24px); height: var(--marker-size, 24px); display: flex; align-items: center; justify-content: center; isolation: isolate; overflow: visible; }
+.volc-icon svg, .quake-icon svg { position: relative; z-index: 2; display: block; filter: drop-shadow(0 1px 3px rgba(0,0,0,.9)); }
+.volc-icon.erupting::before, .volc-icon.erupting::after,
+.volc-icon.active::before, .volc-icon.active::after,
+.quake-icon.pulsing::before, .quake-icon.pulsing::after {
+  content: ''; position: absolute; inset: -3px; border: 2px solid var(--c); border-radius: 50%;
+  opacity: 0; pointer-events: none; z-index: 1; animation: geoMarkerRipple 2.4s ease-out infinite;
+}
+.volc-icon.erupting::after, .quake-icon.pulsing::after { animation-delay: 1.2s; }
+.volc-icon.erupting::before, .volc-icon.erupting::after { animation-duration: 1.8s; border-width: 2px; }
+.volc-icon.active::before, .volc-icon.active::after { animation-duration: 3.2s; border-width: 1.5px; opacity: .42; }
+.volc-icon.active::after { animation-delay: 1.6s; }
+.quake-icon.alerted::before, .quake-icon.alerted::after { animation-duration: 1.25s; border-width: 2.5px; }
+.quake-icon.alerted svg { filter: drop-shadow(0 0 5px rgba(255,59,48,.95)); }
 
-/* marcadores de terremoto (raio) */
-.quake-icon-wrap { background: transparent; border: none; }
-.quake-icon { display: flex; align-items: center; justify-content: center; filter: drop-shadow(0 0 2px rgba(0,0,0,.8)); }
-.quake-icon.alerted svg { filter: drop-shadow(0 0 4px rgba(255,59,48,.85)); }
+/* Clusters sísmicos permanecem visíveis no zoom mundial e informam o volume agrupado. */
+.quake-cluster-wrap { background: transparent; border: 0; display: flex; align-items: center; justify-content: center; }
+.quake-cluster { position: relative; width: var(--cluster-size); height: var(--cluster-size); display: flex; align-items: center; justify-content: center; border: 2px solid var(--cluster-color); border-radius: 50%; color: #fff; background: rgba(17,24,39,.96); font-size: 11px; font-weight: 800; box-shadow: 0 2px 8px rgba(0,0,0,.6), 0 0 0 4px rgba(100,210,255,.16); }
+.quake-cluster-alert { animation: clusterGlow 1.8s ease-in-out infinite; }
+@keyframes geoMarkerRipple { 0% { transform: scale(.55); opacity: .78; } 75%, 100% { transform: scale(2.25); opacity: 0; } }
+@keyframes clusterGlow { 0%,100% { box-shadow: 0 2px 8px rgba(0,0,0,.6), 0 0 0 3px rgba(255,59,48,.14); } 50% { box-shadow: 0 2px 12px rgba(0,0,0,.7), 0 0 0 8px rgba(255,59,48,.24); } }
+@media (prefers-reduced-motion: reduce) { .volc-icon.erupting::before, .volc-icon.erupting::after, .volc-icon.active::before, .volc-icon.active::after, .quake-icon.pulsing::before, .quake-icon.pulsing::after, .quake-cluster-alert { animation: none !important; opacity: .55; } }
 
 /* chip "em erupÃ§Ã£o" clicÃ¡vel */
 .chip.stat.erupting { cursor: pointer; font-family: inherit; background: transparent; appearance: none; }
@@ -122,11 +136,6 @@ h2 { font-size: 17px; } h3 { font-size: 13px; text-transform: uppercase; letter-
 /* legenda: atividade recente */
 .lg.tri.recent { border-bottom: 12px solid #a78bfa; }
 .lg.bolt { display: inline-flex; align-items: center; justify-content: center; }
-@keyframes pulse {
-  0% { box-shadow: 0 0 0 0 rgba(255,59,48,.7); }
-  70% { box-shadow: 0 0 0 14px rgba(255,59,48,0); }
-  100% { box-shadow: 0 0 0 0 rgba(255,59,48,0); }
-}
 
 /* drawers e painÃ©is */
 .drawer { position: absolute; right: 0; top: 0; bottom: 0; width: 380px; max-width: 92vw; background: var(--panel); border-left: 1px solid var(--border); z-index: 900; display: flex; flex-direction: column; box-shadow: -12px 0 30px rgba(0,0,0,.45); overflow: hidden; }
@@ -150,7 +159,15 @@ h2 { font-size: 17px; } h3 { font-size: 13px; text-transform: uppercase; letter-
 .notif-list li { border-bottom: 1px solid var(--border); padding: 9px 2px; font-size: 13px; }
 .notif-list li.n-eruption { border-left: 3px solid var(--red); padding-left: 10px; }
 .notif-list li.n-quake { border-left: 3px solid var(--blue); padding-left: 10px; }
+.notif-list li.n-tsunami { border-left: 3px solid #ff7a35; padding-left: 10px; background: rgba(255,122,53,.07); }
 .notif-list .empty { color: var(--muted); border: none; }
+.tsunami-active-list { border: 1px solid rgba(255,122,53,.55); border-radius: 10px; padding: 10px; margin: 10px 0; background: rgba(255,122,53,.07); }
+.tsunami-active-list h3 { margin: 0 0 8px; font-size: 13px; color: #ffb18a; }
+.tsunami-active-item { padding: 8px 0; border-top: 1px solid rgba(255,122,53,.22); font-size: 12px; }
+.tsunami-active-item:first-of-type { border-top: 0; }
+.tsunami-active-item p { margin: 4px 0; }
+.tsunami-active-item small { display: block; color: var(--muted); margin-bottom: 4px; }
+.tsunami-active-item a { color: #ffb18a; font-size: 11px; }
 .btn { background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 9px 14px; font-weight: 700; cursor: pointer; font-size: 13px; }
 .btn.ghost { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
 .lang-select { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; font-size: 12.5px; max-width: 130px; }
@@ -202,14 +219,14 @@ h2 { font-size: 17px; } h3 { font-size: 13px; text-transform: uppercase; letter-
 .intel-sources { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
 .intel-sub { font-size: 12px; color: var(--muted); letter-spacing: .05em; margin: 6px 0; text-transform: uppercase; }
 .intel-carousel { display: grid; grid-template-columns: 28px minmax(0, 1fr) 28px; align-items: stretch; gap: 6px; min-width: 0; }
-.intel-cards { display: flex; min-width: 0; gap: 10px; overflow-x: auto; overflow-y: hidden; scroll-behavior: smooth; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; scrollbar-width: none; padding: 0 0 4px; }
+.intel-cards { display: flex; min-width: 0; gap: 10px; overflow-x: auto; overflow-y: hidden; scroll-behavior: smooth; scroll-snap-type: x proximity; overscroll-behavior-x: contain; scrollbar-width: none; padding: 0 0 4px; contain: layout paint; }
 .intel-cards::-webkit-scrollbar { display: none; }
 .intel-nav { align-self: center; width: 28px; height: 52px; padding: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--text); font-size: 25px; line-height: 1; cursor: pointer; transition: opacity .15s ease, color .15s ease, border-color .15s ease; }
 .intel-nav:hover:not(:disabled) { color: var(--accent2); border-color: var(--accent2); }
 .intel-nav:disabled { opacity: .22; cursor: default; }
 .intel-source-link { color: inherit; text-decoration: none; }
 .intel-source-link:hover { color: var(--accent2); text-decoration: underline; }
-.icard { flex: 0 0 calc((100% - 40px) / 5); min-width: 0; scroll-snap-align: start; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; }
+.icard { flex: 0 0 calc((100% - 40px) / 5); min-width: 0; scroll-snap-align: start; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; content-visibility: auto; contain-intrinsic-size: 380px; }
 .icard.erupting { border-color: rgba(255,59,48,.55); }
 @media (max-width: 960px) { .icard { flex-basis: calc((100% - 20px) / 3); } }
 @media (max-width: 760px) { .icard { flex-basis: calc((100% - 10px) / 2); } }
@@ -289,3 +306,131 @@ h2 { font-size: 17px; } h3 { font-size: 13px; text-transform: uppercase; letter-
 .historical-toggle { color: #d8b4fe !important; }
 .historical-toggle input { accent-color: #a78bfa; }
 .historical-toggle-symbol { color: #d8b4fe; font-size: 17px; line-height: 1; }
+
+.settings-group-title { margin: 12px 0 4px; padding-top: 8px; border-top: 1px solid var(--border); color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.settings-group-title:first-of-type { margin-top: 0; border-top: 0; }
+
+
+/* ===================== GeoGus Mobile Map UI ===================== */
+@media (max-width: 760px) {
+  html, body, #root { width: 100%; height: 100%; min-height: 100%; overflow: hidden; }
+  .app { position: relative; width: 100%; height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; }
+
+  /* O mapa ocupa a tela inteira; os controles flutuam como em apps de mapas. */
+  .layout { position: absolute; inset: 0; display: block; width: 100%; height: 100%; min-height: 0; }
+  .map-wrap { position: absolute; inset: 0; width: 100%; height: 100%; min-width: 0; }
+  .mapview { position: absolute; inset: 0; width: 100%; height: 100%; min-height: 0; touch-action: none; }
+
+  .topbar {
+    position: absolute; top: calc(8px + env(safe-area-inset-top)); left: 8px; right: 8px;
+    z-index: 1250; display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: 7px;
+    align-items: center; min-height: 54px; padding: 6px 8px; border: 1px solid rgba(255,255,255,.12);
+    border-radius: 15px; background: rgba(17,24,39,.93); backdrop-filter: blur(18px); box-shadow: 0 5px 22px rgba(0,0,0,.32);
+  }
+  .brand { grid-column: 1; justify-content: center; }
+  .brand-name, .lang-select { display: none !important; }
+  .logo { font-size: 22px; }
+  .searchbar { grid-column: 2; width: 100%; max-width: none; min-width: 0; }
+  .searchbar input { height: 40px; padding: 8px 10px; font-size: 14px; border-radius: 11px; }
+  .search-drop { top: 44px; max-height: 42dvh; border-radius: 12px; }
+  .top-actions { grid-column: 3; display: flex; gap: 5px; }
+  .top-actions .icon-btn { width: 38px; height: 40px; padding: 0; font-size: 16px; border-radius: 11px; }
+
+  .statusbar {
+    position: absolute; top: calc(70px + env(safe-area-inset-top)); left: 8px; right: 8px; z-index: 1240;
+    width: auto; padding: 4px 2px; gap: 5px; border: 0; background: transparent;
+    overflow-x: auto; overflow-y: hidden; scrollbar-width: none; -webkit-overflow-scrolling: touch;
+  }
+  .statusbar::-webkit-scrollbar, .filters::-webkit-scrollbar { display: none; }
+  .statusbar .chip { padding: 4px 8px; font-size: 10.5px; background: rgba(17,24,39,.91); backdrop-filter: blur(12px); box-shadow: 0 2px 8px rgba(0,0,0,.22); }
+  .statusbar .chip.stat:not(.erupting), .statusbar .chip.conn { display: none; }
+
+  .intel {
+    position: absolute; top: calc(108px + env(safe-area-inset-top)); left: 8px; right: 8px; z-index: 1230;
+    width: auto; border: 1px solid rgba(255,255,255,.13); border-radius: 12px;
+    background: rgba(17,24,39,.91); backdrop-filter: blur(14px); box-shadow: 0 4px 16px rgba(0,0,0,.2);
+  }
+  .intel-head { padding: 7px 10px; }
+  .intel-toggle { gap: 7px; font-size: 12px; letter-spacing: .025em; }
+  .intel-body { max-height: 42dvh; padding: 3px 7px 8px; overflow: hidden; }
+  .intel-body-carousel-only { max-height: 42dvh; }
+  .intel-carousel { grid-template-columns: 30px minmax(0,1fr) 30px; gap: 4px; }
+  .intel-nav { width: 30px; height: 44px; border-radius: 10px; }
+  .intel-cards { gap: 8px; padding-bottom: 3px; scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch; }
+  .icard { flex: 0 0 min(82vw, 340px); max-height: 39dvh; }
+  .icard-photo, .icard-photo .volcano-photo img { height: 100px; max-height: 100px; }
+  .icard-body { padding: 8px; gap: 5px; }
+  .icard-body h4 { font-size: 14px; }
+  .icard-text { display: none; }
+  .icard-actions .btn, .icard-actions .btn.ghost { min-height: 36px; }
+
+  .filters {
+    position: absolute; left: 8px; right: 8px; bottom: calc(9px + env(safe-area-inset-bottom)); z-index: 1260;
+    display: flex; flex-wrap: nowrap; align-items: center; gap: 7px; width: auto; max-width: none;
+    padding: 7px 8px; border: 1px solid rgba(255,255,255,.13); border-radius: 14px;
+    background: rgba(17,24,39,.94); backdrop-filter: blur(18px); box-shadow: 0 5px 22px rgba(0,0,0,.32);
+    overflow-x: auto; overflow-y: hidden; scrollbar-width: none; -webkit-overflow-scrolling: touch;
+  }
+  .filters > * { flex: 0 0 auto; white-space: nowrap; }
+  .filters label { gap: 4px; font-size: 11px !important; }
+  .filters label:not(.chk) { display: flex; }
+  .filters select { max-width: 112px; min-height: 34px; padding: 5px 7px; font-size: 11px; }
+  .filters .chk { gap: 4px; font-size: 11px; }
+  .filters .chk input { width: 16px; height: 16px; }
+  .filters .btn { min-height: 34px; padding: 6px 9px; font-size: 11px; }
+  .side-toggle { display: inline-flex !important; }
+  .legend { display: none !important; }
+
+  /* Painel de resultados em bottom-sheet, liberando o mapa atrás. */
+  .sidebar {
+    position: fixed; left: 8px; right: 8px; top: auto; bottom: calc(76px + env(safe-area-inset-bottom));
+    width: auto; max-width: none; height: min(66dvh, 620px); max-height: calc(100dvh - 150px);
+    flex: none; z-index: 1400; border: 1px solid rgba(255,255,255,.14); border-radius: 17px;
+    box-shadow: 0 12px 36px rgba(0,0,0,.48); overflow: hidden;
+    transform: translateY(calc(100% + 28px)); transition: transform .24s cubic-bezier(.2,.75,.25,1);
+  }
+  .sidebar.open { transform: translateY(0); }
+  .side-head { flex: 0 0 auto; padding: 9px; }
+  .tab { min-height: 38px; font-size: 11.5px; }
+  .close-side { display: block; min-width: 36px; min-height: 36px; }
+  .side-body { overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+  .list li { min-height: 58px; padding: 10px 11px; }
+  .updates { overflow-y: auto; }
+
+  .drawer {
+    position: fixed; left: 8px; right: 8px; top: auto; bottom: calc(76px + env(safe-area-inset-bottom));
+    width: auto; max-width: none; height: min(68dvh, 640px); max-height: calc(100dvh - 140px);
+    border: 1px solid rgba(255,255,255,.15); border-radius: 17px; z-index: 1450;
+    box-shadow: 0 12px 36px rgba(0,0,0,.5);
+  }
+  .drawer header { flex: 0 0 auto; padding: 10px 13px; }
+  .drawer-body { padding: 10px 13px calc(18px + env(safe-area-inset-bottom)); overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+
+  .panel-overlay { align-items: flex-end; justify-content: center; padding: 10px 8px calc(8px + env(safe-area-inset-bottom)); }
+  .panel { width: 100%; max-width: 560px; max-height: 78dvh; border-radius: 17px 17px 12px 12px; padding: 0 14px 14px; overscroll-behavior: contain; }
+  .panel header { padding-top: 13px; }
+
+  .leaflet-bottom.leaflet-right { bottom: calc(68px + env(safe-area-inset-bottom)); right: 8px; }
+  .leaflet-control-zoom a { width: 42px !important; height: 42px !important; line-height: 42px !important; font-size: 22px !important; }
+  .leaflet-control-attribution { font-size: 8px !important; }
+  .leaflet-popup { max-width: calc(100vw - 34px) !important; }
+  .leaflet-popup-content { max-width: calc(100vw - 72px) !important; }
+}
+
+@media (max-width: 390px) {
+  .topbar { grid-template-columns: 30px minmax(0,1fr) auto; gap: 5px; left: 6px; right: 6px; }
+  .top-actions { gap: 4px; }
+  .top-actions .icon-btn { width: 34px; height: 38px; }
+  .intel { left: 6px; right: 6px; }
+  .filters { left: 6px; right: 6px; gap: 6px; padding: 6px; }
+  .icard { flex-basis: 84vw; }
+  .sidebar, .drawer { left: 6px; right: 6px; }
+}
+
+@media (max-height: 620px) and (max-width: 760px) {
+  .intel:not(.open) { top: calc(104px + env(safe-area-inset-top)); }
+  .intel.open { top: calc(104px + env(safe-area-inset-top)); }
+  .intel-body, .intel-body-carousel-only { max-height: 34dvh; }
+  .icard { max-height: 31dvh; }
+  .sidebar { height: 58dvh; }
+}

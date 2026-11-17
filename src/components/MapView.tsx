@@ -29,14 +29,30 @@ const BOLT_PATH = 'M13.5 2 L4.5 13.5 L10 13.5 L8.5 22 L19.5 10 L13 10 Z';
 function volcanoIcon(v: Volcano): L.DivIcon {
   const c = STATUS_META[v.status]?.color ?? '#8e8e93';
   const erupting = v.status === 'ERUPCAO';
-  const size = erupting ? 22 : 16;
+  const active = v.status === 'ATIVO' || v.status === 'RECENTE';
+  const size = erupting ? 28 : 22;
   return L.divIcon({
     className: 'volc-icon-wrap',
-    html: `<div class="volc-icon ${erupting ? 'erupting' : ''}" style="--c:${c}">` +
-      `<svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true">` +
-      `<path d="${VOLCANO_PATH}" fill="${c}" stroke="rgba(0,0,0,.65)" stroke-width="1.2" stroke-linejoin="round"/>` +
+    html: `<div class="volc-icon ${erupting ? 'erupting' : active ? 'active' : ''}" style="--c:${c};--marker-size:${size}px" role="img" aria-label="${v.name}${erupting ? ' — em erupção' : active ? ' — atividade recente/ativa' : ''}">` +
+      `<svg viewBox="0 0 24 24" width="${erupting ? 20 : 16}" height="${erupting ? 20 : 16}" aria-hidden="true">` +
+      `<path d="${VOLCANO_PATH}" fill="${c}" stroke="rgba(0,0,0,.72)" stroke-width="1.2" stroke-linejoin="round"/>` +
       (erupting ? '<circle cx="12" cy="6" r="1.7" fill="#fff" opacity=".92"/><circle cx="14.6" cy="3.8" r="1.15" fill="#fff" opacity=".65"/>' : '') +
       '</svg></div>',
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
+    tooltipAnchor: [0, -size / 2],
+  });
+}
+
+function quakeClusterIcon(cluster: any): L.DivIcon {
+  const children = cluster.getAllChildMarkers() as L.Marker[];
+  const maxMag = children.reduce((max, marker) => Math.max(max, Number((marker.options as any).quakeMag ?? 0)), 0);
+  const count = cluster.getChildCount();
+  const tone = maxMag >= 6 ? '#ff3b30' : maxMag >= 4.5 ? '#ff9f0a' : '#64d2ff';
+  const size = count >= 100 ? 44 : count >= 10 ? 38 : 32;
+  return L.divIcon({
+    className: 'quake-cluster-wrap',
+    html: `<span class="quake-cluster ${maxMag >= 4.5 ? 'quake-cluster-alert' : ''}" style="--cluster-color:${tone};--cluster-size:${size}px">${count}</span>`,
     iconSize: [size, size],
     iconAnchor: [size / 2, size / 2],
   });
@@ -217,23 +233,19 @@ function quakeMarker(q: Quake, onSelect: (q: Quake) => void, alertMag: number, t
   const alerted = q.mag >= alertMag;
   const icon = L.divIcon({
     className: 'quake-icon-wrap',
-    html: `<div class="quake-icon ${alerted ? 'alerted' : ''}" style="--c:${c}">` +
+    html: `<div class="quake-icon pulsing ${alerted ? 'alerted' : ''}" style="--c:${c};--marker-size:${s}px" role="img" aria-label="Terremoto magnitude ${q.mag?.toFixed(1) ?? 'não disponível'}">` +
       `<svg viewBox="0 0 24 24" width="${s}" height="${s}" aria-hidden="true">` +
-      `<path d="${BOLT_PATH}" fill="${c}" stroke="rgba(0,0,0,.7)" stroke-width="1.1" stroke-linejoin="round"/>` +
+      `<path d="${BOLT_PATH}" fill="${c}" stroke="rgba(0,0,0,.78)" stroke-width="1.1" stroke-linejoin="round"/>` +
       '</svg></div>',
-    iconSize: [s, s],
-    iconAnchor: [s / 2, s / 2],
+    iconSize: [s + 16, s + 16],
+    iconAnchor: [(s + 16) / 2, (s + 16) / 2],
   });
-  const m = L.marker([q.lat, q.lon], { icon, title: `M ${q.mag?.toFixed(1) ?? '?'}` });
+  const m = L.marker([q.lat, q.lon], {
+    icon, title: `M ${q.mag?.toFixed(1) ?? '?'}`, riseOnHover: true, zIndexOffset: 650,
+  });
+  (m.options as L.MarkerOptions & { quakeMag?: number }).quakeMag = q.mag;
   m.bindPopup(() => quakePopupHtml(q, t, locale), { maxWidth: 300 });
   m.on('click', () => onSelect(q));
-  if (alerted) {
-    m.on('add', () => {
-      const ring = L.circleMarker([q.lat, q.lon], { radius: s / 2 + 6, color: '#ff3b30', weight: 1.5, fill: false, dashArray: '3 4' }).addTo((m as any)._map);
-      (m as any)._ring = ring;
-    });
-    m.on('remove', () => { (m as any)._ring?.remove(); });
-  }
   return m;
 }
 
@@ -262,10 +274,13 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
   const { t, locale } = useI18n();
 
   useEffect(() => {
-    if (!divRef.current || mapRef.current) return;
-    const map = L.map(divRef.current, {
+    const container = divRef.current;
+    if (!container || mapRef.current) return;
+    const map = L.map(container, {
       center: [-10, -40], zoom: 3, minZoom: 2, worldCopyJump: true,
-      zoomControl: false, preferCanvas: true, maxBounds: L.latLngBounds([-90, -220], [90, 220]),
+      zoomControl: false, preferCanvas: true, touchZoom: true,
+      scrollWheelZoom: !window.matchMedia('(pointer: coarse)').matches,
+      zoomSnap: 0.5, maxBounds: L.latLngBounds([-90, -220], [90, 220]),
     });
     L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
       attribution: 'Mapa: © Esri, Maxar, Earthstar Geographics © OpenStreetMap',
@@ -278,7 +293,11 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
     };
     document.addEventListener('click', (map as any)._delegated);
     mapRef.current = map;
-    qCluster.current = L.markerClusterGroup({ maxClusterRadius: 45, showCoverageOnHover: false, chunkedLoading: true });
+    qCluster.current = L.markerClusterGroup({
+      maxClusterRadius: 30, showCoverageOnHover: false, chunkedLoading: true,
+      spiderfyOnMaxZoom: true, zoomToBoundsOnClick: true, disableClusteringAtZoom: 7,
+      iconCreateFunction: quakeClusterIcon,
+    });
     vCluster.current = L.markerClusterGroup({ maxClusterRadius: 35, showCoverageOnHover: false, chunkedLoading: true, disableClusteringAtZoom: 9 });
     vClusterFlat.current = L.layerGroup();
     historicalLayer.current = L.markerClusterGroup({ maxClusterRadius: 42, showCoverageOnHover: false, chunkedLoading: true });
@@ -286,8 +305,33 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
     map.addLayer(vClusterFlat.current);
     // A camada histórica começa desligada; o usuário a ativa pela flag independente.
     map.addLayer(qCluster.current);
-    setTimeout(() => map.invalidateSize(), 60);
-    return () => { document.removeEventListener('click', (map as any)._delegated); map.remove(); mapRef.current = null; historicalLayer.current = null; };
+
+    // Leaflet precisa recalcular o viewport quando o layout muda (mobile,
+    // rotação, abertura de painel, endereço do navegador ou redimensionamento).
+    let resizeRaf = 0;
+    const invalidate = () => {
+      if (resizeRaf) cancelAnimationFrame(resizeRaf);
+      resizeRaf = requestAnimationFrame(() => {
+        resizeRaf = 0;
+        if (map.getContainer().isConnected) map.invalidateSize({ pan: false, debounceMoveend: true });
+      });
+    };
+    const resizeObserver = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(invalidate) : null;
+    resizeObserver?.observe(container);
+    window.addEventListener('resize', invalidate, { passive: true });
+    window.addEventListener('orientationchange', invalidate, { passive: true });
+    window.visualViewport?.addEventListener('resize', invalidate, { passive: true });
+    const sizeTimers = [80, 240, 600].map((ms) => window.setTimeout(invalidate, ms));
+    return () => {
+      sizeTimers.forEach(clearTimeout);
+      if (resizeRaf) cancelAnimationFrame(resizeRaf);
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', invalidate);
+      window.removeEventListener('orientationchange', invalidate);
+      window.visualViewport?.removeEventListener('resize', invalidate);
+      document.removeEventListener('click', (map as any)._delegated);
+      map.remove(); mapRef.current = null; historicalLayer.current = null;
+    };
   }, []);
 
   // vulcões — no filtro "Em erupção" os marcadores ficam sempre visíveis (sem cluster)
@@ -305,7 +349,7 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
         if (settings.volcanoFilter === 'active' && !(v.status === 'ERUPCAO' || v.status === 'ATIVO')) continue;
         if (settings.volcanoFilter === 'inactive' && (v.status === 'ERUPCAO' || v.status === 'ATIVO')) continue;
         if (flat && v.status !== 'ERUPCAO') continue;
-        const m = L.marker([v.lat, v.lon], { icon: volcanoIcon(v), title: v.name });
+        const m = L.marker([v.lat, v.lon], { icon: volcanoIcon(v), title: v.name, riseOnHover: true, zIndexOffset: v.status === 'ERUPCAO' ? 900 : 450 });
         m.bindPopup(() => volcanoPopupHtml(v, ongoing, t), { maxWidth: 300 });
         m.on('click', () => cbRef.current.onSelectVolcano(v));
         g.addLayer(m);

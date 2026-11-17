@@ -80,9 +80,28 @@ export interface Quake {
   tsunami: number;
 }
 
+export interface TsunamiAlert {
+  id: string;
+  source: 'PTWC' | 'NTWC';
+  sourceLabel: string;
+  scope: string;
+  title: string;
+  body: string;
+  area: string;
+  event: string;
+  level: 'WARNING' | 'WATCH' | 'ADVISORY' | 'INFORMATION';
+  urgency: string;
+  severity: string;
+  certainty: string;
+  sent: string;
+  expires: string | null;
+  actionable: boolean;
+  url: string;
+}
+
 export interface NotifEntry {
   key: string;
-  kind: 'quake' | 'eruption' | 'sistema';
+  kind: 'quake' | 'eruption' | 'tsunami' | 'sistema';
   title: string;
   body: string;
   time: number;
@@ -112,5 +131,6 @@ export interface Settings {
   showHistoricalGeology: boolean;
   quakeAlerts: boolean;
   eruptionAlerts: boolean;
+  tsunamiAlerts: boolean;
   browserNotifs: boolean;
 }

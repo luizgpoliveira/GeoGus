@@ -6,6 +6,7 @@ import { readFileSync, existsSync, statSync } from 'node:fs';
 import { extname, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getPhivolcs, getPvmbg, getUsgs, getUsgsStatus, getReports } from './reports.mjs';
+import { getTsunamiAlerts } from './tsunami.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DIST = join(__dirname, '..', 'dist');
@@ -116,6 +117,12 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/reports') {
       const force = url.searchParams.get('force') === '1';
       return json(await cap(getReports(force), 34_000, 'Central de relatórios'));
+    }
+    if (url.pathname === '/api/tsunami') {
+      const force = url.searchParams.get('force') === '1';
+      const result = await cap(getTsunamiAlerts(force), 10_000, 'Alertas de tsunami NOAA');
+      res.setHeader('Cache-Control', 'no-store, max-age=0');
+      return json(result, result.ok ? 200 : 503);
     }
   } catch (e) {
     return json({ ok: false, error: String(e?.message || e) });

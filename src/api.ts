@@ -1,4 +1,4 @@
-import type { Quake, Volcano, VolcanoStatus, Period, AlertInfo, ReportItem, ReportsPayload } from './types';
+import type { Quake, Volcano, VolcanoStatus, Period, AlertInfo, ReportItem, ReportsPayload, TsunamiAlert } from './types';
 
 /* ============================ GVP (Smithsonian) — via proxy /api/gvp ============================
  * Fontes oficiais:
@@ -393,6 +393,37 @@ export async function loadHistoricalHazards(vns: number[]): Promise<Map<number, 
 
 /* ============================ Terremotos ============================ */
 
+/** Cache curto e deduplicação de feeds sísmicos: o USGS publica estes GeoJSONs em ciclos de ~1 min. */
+const quakeFeedCache = new Map<string, { stamp: number; payload: any }>();
+const quakeFeedFlights = new Map<string, Promise<any>>();
+const QUAKE_FEED_TTL = 45_000;
+
+async function fetchQuakeFeedJSON(key: string, url: string, timeoutMs = 12_000): Promise<any> {
+  const cached = quakeFeedCache.get(key);
+  if (cached && Date.now() - cached.stamp < QUAKE_FEED_TTL) return cached.payload;
+  const existing = quakeFeedFlights.get(key);
+  if (existing) return existing;
+  const flight = (async () => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, { signal: controller.signal, cache: 'no-store' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const payload = await response.json();
+      quakeFeedCache.set(key, { stamp: Date.now(), payload });
+      return payload;
+    } catch (error: any) {
+      if (controller.signal.aborted || error?.name === 'AbortError') throw new Error(`Feed sísmico excedeu ${timeoutMs / 1000}s`);
+      throw error;
+    } finally {
+      window.clearTimeout(timer);
+      quakeFeedFlights.delete(key);
+    }
+  })();
+  quakeFeedFlights.set(key, flight);
+  return flight;
+}
+
 /** Feed USGS ComCat apropriado ao período/magnitude (GeoJSON público, CORS aberto). */
 export function usgsFeedUrl(period: Period, minMag: number): string {
   // "all" cobre todos os eventos do período; tiers superiores apenas reduzem volume
@@ -427,9 +458,8 @@ function parseUSGS(j: any): Quake[] {
 }
 
 export async function loadQuakesUSGS(period: Period, minMag: number): Promise<Quake[]> {
-  const r = await fetch(usgsFeedUrl(period, minMag));
-  if (!r.ok) throw new Error(`USGS HTTP ${r.status}`);
-  return parseUSGS(await r.json());
+  const url = usgsFeedUrl(period, minMag);
+  return parseUSGS(await fetchQuakeFeedJSON(`USGS:${url}`, url));
 }
 
 /** EMSC SeismicPortal (fdsnws) — fallback quando o USGS está indisponível. */
@@ -437,9 +467,7 @@ export async function loadQuakesEMSC(period: Period, minMag: number): Promise<Qu
   const days = period === 'day' ? 1 : period === 'week' ? 7 : 30;
   const start = new Date(Date.now() - days * 86400e3).toISOString().slice(0, 19);
   const url = `https://www.seismicportal.eu/fdsnws/event/1/query?format=json&starttime=${start}&minmagnitude=${minMag}&limit=1000&orderby=time`;
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(`EMSC HTTP ${r.status}`);
-  const j = await r.json();
+  const j = await fetchQuakeFeedJSON(`EMSC:${period}:${minMag}`, url, 12_000);
   return (j.features ?? []).map((f: any): Quake => {
     const p = f.properties;
     const c = f.geometry?.coordinates ?? [0, 0, 0];
@@ -473,6 +501,11 @@ export async function loadQuakes(period: Period, minMag: number): Promise<{ quak
       throw new Error(`USGS e EMSC indisponíveis (${e}; ${e2})`);
     }
   }
+}
+
+/** Alertas CAP oficiais dos centros NOAA PTWC e NTWC via backend local/Vercel. */
+export async function loadTsunamiAlerts(): Promise<{ ok: boolean; stamp: string; alerts: TsunamiAlert[]; sources: Array<{ id: string; label: string; ok: boolean; count: number; error?: string }>; errors?: string[]; stale?: boolean; cacheAgeMs?: number; coverage?: string }> {
+  return fetchJsonT('/api/tsunami', 11_000, 'Alertas de tsunami NOAA');
 }
 
 /* ============================ Fontes auxiliares ============================ */
@@ -509,27 +542,70 @@ export const GVP_IMAGE_URL = (file?: string | null) =>
 
 const commonsCache = new Map<string, Promise<{ url: string; credit?: string; license?: string } | null>>();
 
-/** Busca uma fotografia no Wikimedia Commons pelo nome do vulcão (API pública, CORS aberto). */
-export function commonsImage(name: string): Promise<{ url: string; credit?: string; license?: string } | null> {
-  const key = name.toLowerCase();
+export interface CuratedVolcanoPhoto { url: string; credit: string; sourceUrl: string }
+
+/** Imagens validadas manualmente para nomes que geravam correspondências ambíguas. */
+const CURATED_VOLCANO_PHOTOS: Record<number, CuratedVolcanoPhoto> = {
+  // Erebus: fotografia de campo USGS (Richard Waitt, 1972), domínio público nos EUA.
+  390020: {
+    url: 'https://upload.wikimedia.org/wikipedia/commons/4/4e/Mt_erebus.jpg',
+    credit: 'Richard Waitt / USGS (1972) · domínio público',
+    sourceUrl: 'https://commons.wikimedia.org/wiki/File:Mt_erebus.jpg',
+  },
+  // Saunders é dominada pelo vulcão Mount Michael; imagem Landsat 8/NASA de 24-08-2026.
+  390090: {
+    url: 'https://assets.science.nasa.gov/dynamicimage/assets/science/esd/eo/images/iotd/2026/a-bright-spot-at-mount-michael/mountmichael_oli_20260824.jpg',
+    credit: 'NASA Earth Observatory / Michala Garrison (2026)',
+    sourceUrl: 'https://science.nasa.gov/earth/earth-observatory/a-bright-spot-at-mount-michael/',
+  },
+};
+
+export function curatedVolcanoPhoto(vn: number): CuratedVolcanoPhoto | undefined {
+  return CURATED_VOLCANO_PHOTOS[vn];
+}
+
+const PHOTO_SEARCH_TERMS: Record<number, string> = {
+  390020: 'Mount Erebus',
+  390090: 'Mount Michael',
+};
+
+const normalizeImageTitle = (value: string) => value.toLowerCase()
+  .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+
+/**
+ * Busca no Commons sem aceitar o primeiro resultado genérico. O título precisa
+ * conter o nome/alias completo do vulcão; se não houver correspondência segura,
+ * retorna null e a interface mostra placeholder em vez de foto enganosa.
+ */
+export function commonsImage(name: string, vn?: number): Promise<{ url: string; credit?: string; license?: string } | null> {
+  const searchTerm = (vn && PHOTO_SEARCH_TERMS[vn]) || `${name} volcano`;
+  const key = `${vn ?? ''}:${searchTerm.toLowerCase()}`;
   if (commonsCache.has(key)) return commonsCache.get(key)!;
   const p = (async () => {
     try {
       const params = new URLSearchParams({
         action: 'query', format: 'json', origin: '*',
-        generator: 'search', gsrsearch: `File:${name}`, gsrnamespace: '6', gsrlimit: '3',
+        generator: 'search', gsrsearch: `file:"${searchTerm}"`, gsrnamespace: '6', gsrlimit: '8',
         prop: 'imageinfo', iiprop: 'url|extmetadata',
       });
-      const r = await fetch(`https://commons.wikimedia.org/w/api.php?${params}`);
-      if (!r.ok) return null;
-      const j = await r.json();
-      const pages = Object.values(j?.query?.pages ?? {}) as any[];
-      for (const pg of pages.sort((a, b) => a.index - b.index)) {
-        const ii = pg?.imageinfo?.[0];
-        if (!ii?.url) continue;
-        const artist = ii.extmetadata?.Artist?.value ? String(ii.extmetadata.Artist.value).replace(/<[^>]+>/g, '').trim() : undefined;
-        const license = ii.extmetadata?.LicenseShortName?.value;
-        return { url: ii.url, credit: artist, license };
+      const response = await fetch(`https://commons.wikimedia.org/w/api.php?${params}`, { headers: { Accept: 'application/json' } });
+      if (!response.ok) return null;
+      const data = await response.json();
+      const expected = normalizeImageTitle(searchTerm);
+      const expectedTokens = expected.split(' ').filter((token) => token.length > 2);
+      const pages = Object.values(data?.query?.pages ?? {}) as any[];
+      const matches = pages
+        .filter((page) => {
+          const title = normalizeImageTitle(String(page.title || '').replace(/^File\s*:/i, ''));
+          return expectedTokens.length > 0 && expectedTokens.every((token) => title.includes(token));
+        })
+        .sort((a, b) => Number(a.index ?? 999) - Number(b.index ?? 999));
+      for (const page of matches) {
+        const info = page?.imageinfo?.[0];
+        if (!info?.url || !/^https:\/\//i.test(info.url)) continue;
+        const artist = info.extmetadata?.Artist?.value ? String(info.extmetadata.Artist.value).replace(/<[^>]+>/g, '').trim() : undefined;
+        const license = info.extmetadata?.LicenseShortName?.value;
+        return { url: info.thumburl || info.url, credit: artist, license };
       }
       return null;
     } catch {

@@ -239,3 +239,74 @@ Este arquivo registra o estado da entrega para permitir retomada em outra sessÃ
 - Carrossel contém estado inicial explicitamente fechado e CSS de proteção para `data-open=false`.
 - Service Worker sobe para v6, registra com `updateViaCache: none`, chama update() e atualiza o cliente quando a nova versão passa a controlar a página.
 - Vercel recebe cabeçalhos no-cache para `/`, `/index.html` e `/sw.js`, reduzindo a chance de servir entry point/worker antigos.
+
+## Atualização 2026-11-16 — carrossel, fotos e notificações
+
+- `src/components/Intel.tsx`: componente memoizado para não re-renderizar a cada atualização de terremotos/estado global; mantém cache de classificação histórica quando o carrossel fecha e reabre; imagens permanecem lazy-load no componente `VolcanoPhoto`.
+- `src/api.ts`: feeds sísmicos USGS/EMSC agora usam cache curto de 45 s, deduplicação de chamadas simultâneas e timeout de 12 s por consulta.
+- `src/App.tsx`: terremotos são verificados a cada 60 s; IDs novos usam `time` e `updated` para tolerar atraso de publicação do USGS (janela de 25 min), sem gerar alerta retroativo no carregamento inicial; consultas simultâneas são bloqueadas. Alterar filtros não reinicia a linha de base. Tsunami usa anti-concorrência e somente alertas operacionais Watch/Advisory/Warning entram na central. Erupções notificadas por episódio e relatórios oficiais novos sem alertas retroativos na primeira carga.
+- `src/i18n.ts`: explica frequências, permissão, limitações de cobertura NOAA e necessidade de Web Push para entrega com app fechado.
+- `src/styles.css`: separação visual dos grupos de configuração de notificação.
+- `public/sw.js`: mantém exibição persistente de notificações e roteamento ao clicar; não há subscrição Web Push configurada nesta versão.
+- `server/tsunami.mjs` + `api/tsunami.mjs`: coleta CAP oficial NOAA PTWC/NTWC, cache curto, timeout por feed e deduplicação em voo (mantidos e testados nesta atualização).
+
+### Testes nesta atualização
+- `node --check` em módulos Node, handler Vercel, servidor e service worker: aprovado.
+- Transpilação sintática TypeScript/TSX dos seis arquivos modificados: aprovada.
+- Teste CAP simulado: alerta WARNING interpretado e cache reutilizado: aprovado.
+- Teste de guards contra chamadas sobrepostas e baseline: aprovado.
+- `npm ci` excedeu o tempo limite neste ambiente; `npm run build`/typecheck completo não pôde ser concluído por dependências ausentes/incompletas.
+
+### Limitações operacionais
+- Notificações automáticas funcionam enquanto o GeoGus está aberto no navegador; timers em abas em segundo plano podem ser limitados pelo navegador. Para notificar com a aplicação fechada, é necessário configurar Web Push (VAPID, armazenamento de subscriptions e serviço de envio agendado), não incluído nesta entrega.
+- Terremotos consultados por feed global USGS, com fallback EMSC; limiar padrão de alerta M≥2.5 e ajustável até M≥1.0 nas configurações.
+- Tsunami atualmente cobre os feeds CAP NOAA PTWC/NTWC e suas regiões de serviço; não representa uma central mundial única de todos os centros nacionais.
+- Imagens especiais de Erebus e Mount Michael/Saunders usam fontes curadas; as demais usam imagem GVP quando disponível ou busca estrita no Wikimedia Commons, caso contrário placeholder.
+
+## Atualização — marcadores pulsantes, estabilidade do Leaflet e experiência mobile (17/11/2026)
+
+### Mapa e marcadores
+- Marcadores de vulcões em erupção usam anéis CSS de pulsação em vermelho; vulcões classificados como ativos/recentes usam pulsação âmbar mais lenta.
+- Todos os terremotos aparecem como marcadores de raio com pulsação discreta; os que atingem o limiar de alerta usam pulsação vermelha mais intensa.
+- No zoom mundial, terremotos próximos aparecem em clusters circulares com quantidade e cor derivada da maior magnitude agrupada; a partir do zoom 7, os eventos são individualizados e pulsantes. Clusters expandem/spiderfy no zoom máximo.
+- Removido um `circleMarker` adicional por terremoto que era criado/removido no ciclo de vida do marker; a pulsação agora é CSS, reduzindo camadas extras e custo de renderização.
+- Marcadores recebem prioridade de camada (`zIndexOffset`) e `riseOnHover`.
+- O mapa registra `ResizeObserver`, resize, orientação e `visualViewport.resize`, chamando `invalidateSize` após alterações de viewport. Isso corrige mapas Leaflet que ficam com dimensões antigas depois de layout mobile/painéis/rotação.
+
+### Mobile / PWA
+- Em telas até 760 px, o mapa passa a ocupar o viewport completo.
+- Barra superior e busca flutuam sobre o mapa; status das fontes é horizontal e compacto.
+- Filtros viram faixa horizontal rolável junto à parte inferior, respeitando safe-area.
+- Lista de terremotos/erupções vira bottom sheet; detalhes e notificações também são adaptados para telas estreitas.
+- Controles de zoom têm área de toque ampliada; a legenda desktop não ocupa espaço no mobile.
+- `index.html` recebeu metas de app mobile e o service worker/cache foi atualizado para v8 (`gg-sw-v8`, `gg-shell-v8`, `gg-data-v8`) para invalidar os assets anteriores.
+
+### Erro de canal assíncrono do navegador
+- Revisado o código do GeoGus: não há uso de `chrome.runtime`, `browser.runtime` ou listener de extensão que retorne `true` aguardando resposta. A mensagem `A listener indicated an asynchronous response by returning true, but the message channel closed before a response was received` é normalmente emitida por uma extensão do navegador; não é possível corrigi-la no app se a origem for uma extensão. A atualização do service worker/cache foi feita; se a mensagem persistir, confirmar em janela anônima sem extensões.
+
+### Validação desta rodada
+- Transpilação sintática de 11 arquivos TypeScript/TSX com TypeScript: aprovada, sem diagnósticos sintáticos.
+- `node --check` em `public/sw.js`, `server/server.mjs` e `server/reports.mjs`: aprovado.
+- `/api/health` local: HTTP 200 JSON.
+- `/api/gvp` sem parâmetro: HTTP 400 JSON (comportamento esperado, confirma que API local respondeu JSON).
+- Tentativas curtas de consultar USGS HANS/PHIVOLCS/PVMBG/NOAA no ambiente de teste excederam 4 s; conectividade externa não foi validada nesta execução.
+- `npm ci` excedeu o limite de tempo e deixou `node_modules` incompleto; `npm run build` completo/typecheck não pôde ser afirmado como aprovado. Executar `npm ci` e `npm run build` no ambiente do projeto antes do deploy.
+
+## Atualização — mapa pulsante, estabilidade de renderização e interface mobile (17/11/2026)
+
+- `src/components/MapView.tsx`: marcadores de erupção com pulsação vermelha; vulcões ativos/recentes com pulsação âmbar. Terremotos com pulsação própria; eventos acima do limite de alerta usam pulsação vermelha mais forte. Em zoom mundial, terremotos são agrupados em clusters com contagem e tonalidade baseada na maior magnitude; zoom 7+ individualiza os eventos. Clusters expandem ao toque/clique e fazem spiderfy no zoom máximo.
+- Removidos `circleMarker` extras por terremoto; anéis são CSS pseudo-elements, diminuindo a quantidade de camadas Leaflet.
+- Marcadores ganharam prioridade de camada e `riseOnHover`.
+- Leaflet observa alterações de tamanho com `ResizeObserver`, `resize`, `orientationchange` e `visualViewport.resize`, recalculando a dimensão do mapa em layouts mobile, rotação e painéis.
+- `src/styles.css`: layout mobile estilo app de mapas: mapa fullscreen, busca e status flutuantes, filtros horizontais na base, listas em bottom sheet, detalhes/notificações adaptados e áreas de toque maiores, com safe-area.
+- `index.html`: metas de aplicação móvel instalável.
+- `public/sw.js` e `src/main.tsx`: service worker/cache versionados para v8 para descarregar assets antigos no próximo deploy.
+- A mensagem do console `A listener indicated an asynchronous response...` não é produzida por código do GeoGus identificado nesta revisão: o projeto não usa `chrome.runtime`/`browser.runtime` nem listeners de extensão. É comumente originada por extensão do navegador; validar em janela anônima sem extensões.
+
+### Validação 17/11/2026
+- Transpilação sintática de 11 arquivos TypeScript/TSX: aprovada, sem diagnósticos sintáticos.
+- `node --check` em módulos do servidor, handlers API e service worker: aprovado.
+- JSON de `package.json`, `vercel.json` e manifest: aprovado; chaves CSS balanceadas.
+- `/api/health` local: HTTP 200 JSON; rota `/api` desconhecida: HTTP 404 JSON.
+- `npm ci` excedeu o tempo disponível no ambiente e deixou dependências incompletas; build completo e typecheck não foram validados. Executar `npm ci` e `npm run build` localmente antes do deploy.
+- A conectividade externa de todas as fontes não pode ser certificada nesta rodada; healthcheck comprova apenas o backend local.

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReportItem, ReportsPayload, Volcano } from '../types';
 import { GVP_PAGE, loadHistoricalHazards, type HistoricalHazard } from '../api';
 import { useI18n } from '../i18n';
@@ -39,7 +39,7 @@ function riskInfo(hazard?: HistoricalHazard) {
 }
 
 /** Carrossel operacional: somente vulcões cuja erupção em andamento foi confirmada. */
-export default function Intel({ reports, volcanoes, onLocate, onOpen }: IntelProps) {
+function Intel({ reports, volcanoes, onLocate, onOpen }: IntelProps) {
   const { t, locale } = useI18n();
   // O carrossel sempre inicia recolhido; a preferência não é persistida entre aberturas.
   const [open, setOpen] = useState<boolean>(false);
@@ -54,6 +54,8 @@ export default function Intel({ reports, volcanoes, onLocate, onOpen }: IntelPro
   const [hazards, setHazards] = useState<Map<number, HistoricalHazard>>(new Map());
 
   useEffect(() => {
+    // Não buscar o histórico de risco enquanto o carrossel está recolhido.
+    if (!open) return;
     if (!eruptingKey) { setHazards(new Map()); return; }
     let alive = true;
     const ids = eruptingKey.split(',').map(Number);
@@ -61,7 +63,7 @@ export default function Intel({ reports, volcanoes, onLocate, onOpen }: IntelPro
       .then((data) => { if (alive) setHazards(data); })
       .catch(() => { /* o carrossel continua; mostra histórico sem classificação até nova tentativa */ });
     return () => { alive = false; };
-  }, [eruptingKey]);
+  }, [eruptingKey, open]);
 
   const cards = useMemo<ActiveCard[]>(() => {
     const now = Date.now();
@@ -89,23 +91,32 @@ export default function Intel({ reports, volcanoes, onLocate, onOpen }: IntelPro
   useEffect(() => {
     const viewport = cardsViewportRef.current;
     if (!viewport) return;
+    let raf = 0;
     const updateNavigation = () => {
-      const maxScroll = viewport.scrollWidth - viewport.clientWidth;
-      setCanScrollLeft(viewport.scrollLeft > 2);
-      setCanScrollRight(maxScroll > 2 && viewport.scrollLeft < maxScroll - 2);
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        const maxScroll = viewport.scrollWidth - viewport.clientWidth;
+        const left = viewport.scrollLeft > 2;
+        const right = maxScroll > 2 && viewport.scrollLeft < maxScroll - 2;
+        setCanScrollLeft((prev) => prev === left ? prev : left);
+        setCanScrollRight((prev) => prev === right ? prev : right);
+      });
     };
     updateNavigation();
     viewport.addEventListener('scroll', updateNavigation, { passive: true });
     const observer = new ResizeObserver(updateNavigation);
     observer.observe(viewport);
-    if (viewport.firstElementChild) observer.observe(viewport.firstElementChild);
-    return () => { viewport.removeEventListener('scroll', updateNavigation); observer.disconnect(); };
+    Array.from(viewport.children).slice(0, 6).forEach((child) => observer.observe(child));
+    return () => { if (raf) cancelAnimationFrame(raf); viewport.removeEventListener('scroll', updateNavigation); observer.disconnect(); };
   }, [cards.length, open]);
 
   const scrollCards = (direction: -1 | 1) => {
     const viewport = cardsViewportRef.current;
     if (!viewport) return;
-    viewport.scrollBy({ left: direction * viewport.clientWidth * 0.82, behavior: 'smooth' });
+    const firstCard = viewport.firstElementChild as HTMLElement | null;
+    const step = firstCard ? firstCard.getBoundingClientRect().width + 10 : viewport.clientWidth * 0.8;
+    viewport.scrollBy({ left: direction * step * 2, behavior: 'smooth' });
   };
 
   return (
@@ -164,6 +175,8 @@ export default function Intel({ reports, volcanoes, onLocate, onOpen }: IntelPro
     </section>
   );
 }
+
+export default memo(Intel);
 
 interface UpdatesProps {
   items: ReportItem[];

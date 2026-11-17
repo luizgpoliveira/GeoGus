@@ -5,23 +5,58 @@ import SearchBar, { type Suggestion } from './components/SearchBar';
 import Intel, { UpdatesList } from './components/Intel';
 import { HISTORICAL_GEOLOGY } from './historicalGeology';
 import { VolcanoDetails, QuakeDetails } from './components/Details';
-import type { NotifEntry, Quake, ReportsPayload, Settings, SourceInfo, Volcano } from './types';
+import type { NotifEntry, Quake, ReportsPayload, Settings, SourceInfo, TsunamiAlert, Volcano } from './types';
 import {
   classifyVolcano, loadActiveSince1960, loadOngoingEruptions, loadRecentEruptions, loadQuakes, loadVolcanoCatalog, countryPolygon,
-  loadHansStatus, loadPhivolcsStatus, loadPvmbgStatus, loadReports, activityByVolcano,
+  loadHansStatus, loadPhivolcsStatus, loadPvmbgStatus, loadReports, loadTsunamiAlerts, activityByVolcano,
   type AlertMaps,
 } from './api';
 import { I18nContext, LANGS, LOCALE_TAG, makeT, useI18n, type Lang } from './i18n';
 
-const POLL_QUAKES = 5 * 60_000;
+// O feed GeoJSON 7d do USGS é atualizado a cada minuto; alinhar o polling ao ciclo oficial.
+const POLL_QUAKES = 60_000;
 const POLL_ERUP = 15 * 60_000;
 const POLL_REPORTS = 10 * 60_000;
+const POLL_TSUNAMI = 60_000;
 
 const DEFAULT_SETTINGS: Settings = {
-  minMag: 1.0, alertMag: 5.0, period: 'week', country: '', volcanoFilter: 'erupting',
+  minMag: 1.0, alertMag: 2.5, period: 'week', country: '', volcanoFilter: 'erupting',
   showQuakes: true, showVolcanoes: true, showHistoricalGeology: false,
-  quakeAlerts: true, eruptionAlerts: true, browserNotifs: false,
+  quakeAlerts: true, eruptionAlerts: true, tsunamiAlerts: true, browserNotifs: false,
 };
+
+function loadStoredSet(key: string): Set<string> {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || '[]');
+    return new Set<string>(Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []);
+  } catch { return new Set<string>(); }
+}
+
+function loadNotificationKeys(): Set<string> {
+  try {
+    const explicit = JSON.parse(localStorage.getItem('tp.notifKeys') || '[]');
+    const entries = JSON.parse(localStorage.getItem('tp.notifs') || '[]');
+    return new Set<string>([
+      ...(Array.isArray(explicit) ? explicit : []),
+      ...(Array.isArray(entries) ? entries.map((entry: NotifEntry) => entry.key) : []),
+    ].filter((key): key is string => typeof key === 'string'));
+  } catch { return new Set<string>(); }
+}
+
+async function showSystemNotification(title: string, options: NotificationOptions = {}) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const opts: NotificationOptions = { icon: '/icons/icon-192.png', badge: '/icons/icon-192.png', ...options };
+  try {
+    const registration = 'serviceWorker' in navigator ? await navigator.serviceWorker.getRegistration() : undefined;
+    if (registration?.active && 'showNotification' in registration) {
+      await registration.showNotification(title, opts);
+    } else {
+      new Notification(title, opts);
+    }
+  } catch {
+    // Permissão/restrição do navegador não deve interromper a atualização dos dados.
+  }
+}
 
 const loadSettings = (): Settings => {
   try {
@@ -51,6 +86,8 @@ function Shell() {
   const { t, locale, lang, setLang } = useI18n();
   const [settings, setSettings] = useState<Settings>(loadSettings);
   const [quakes, setQuakes] = useState<Quake[]>([]);
+  const [tsunamiAlerts, setTsunamiAlerts] = useState<TsunamiAlert[]>([]);
+  const [tsunamiInfo, setTsunamiInfo] = useState<SourceInfo>({ id: 'tsunami', label: 'NOAA Tsunami Centers', ok: false, updated: null });
   const [quakeInfo, setQuakeInfo] = useState<SourceInfo>({ id: 'quakes', label: 'Terremotos', ok: false, updated: null });
   const [volcanoes, setVolcanoes] = useState<Volcano[]>([]);
   const [volcanoInfo, setVolcanoInfo] = useState<SourceInfo>({ id: 'gvp', label: 'Smithsonian GVP', ok: false, updated: null });
@@ -66,8 +103,15 @@ function Shell() {
   const [showSide, setShowSide] = useState(false);
   const [online, setOnline] = useState(navigator.onLine);
   const mapRef = useRef<L.Map | null>(null);
-  const seenQuakes = useRef<Set<string>>(new Set(JSON.parse(localStorage.getItem('tp.seen') || '[]')));
+  const seenQuakes = useRef<Set<string>>(loadStoredSet('tp.seen'));
+  const seenTsunami = useRef<Set<string>>(loadStoredSet('tp.tsunamiSeen'));
+  const notificationKeys = useRef<Set<string>>(loadNotificationKeys());
+  const lastQuakeCheck = useRef(0);
+  const quakeFetchRunning = useRef(false);
+  const tsunamiFetchRunning = useRef(false);
+  const tsunamiBaseline = useRef(false);
   const baseline = useRef({ quakes: false, eruptions: false });
+  const reportsBaseline = useRef(false);
   const ongoingRef = useRef<Set<number>>(new Set());
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
@@ -81,9 +125,16 @@ function Shell() {
   }, []);
 
   const pushNotif = useCallback((n: NotifEntry, browser: boolean) => {
+    if (notificationKeys.current.has(n.key)) return;
+    notificationKeys.current.add(n.key);
+    try { localStorage.setItem('tp.notifKeys', JSON.stringify([...notificationKeys.current].slice(-3000))); } catch { /* quota/private mode */ }
     setNotifs((prev) => [n, ...prev.filter((x) => x.key !== n.key)].slice(0, 80));
-    if (browser && Notification.permission === 'granted') {
-      try { new Notification(n.title, { body: n.body, tag: n.key }); } catch { /* alguns navegadores exigem SW */ }
+    if (browser && settingsRef.current.browserNotifs) {
+      void showSystemNotification(n.title, {
+        body: n.body,
+        tag: n.key,
+        data: { url: n.url || '/' },
+      });
     }
   }, []);
 
@@ -141,19 +192,26 @@ function Shell() {
       usgs: srcInfo('usgs', 'USGS HANS', hansR),
     });
     const ongoing = new Set(erup.ongoing.keys());
+    ongoingRef2.current = erup.ongoing;
     const list = classifyAll(ongoing, alerts);
     const eruptingNow = new Set(list.filter((v) => v.holocene && v.status === 'ERUPCAO').map((v) => v.vn));
     if (notify && baseline.current.eruptions && settingsRef.current.eruptionAlerts) {
       for (const vn of eruptingNow) {
         if (!eruptingRef.current.has(vn)) {
           const v = list.find((x) => x.vn === vn);
-          if (v) pushNotif({ key: `e:${vn}`, kind: 'eruption', title: t('nt.e.new', { name: v.name }), body: t('nt.e.newBody', { country: v.country }), time: Date.now(), url: `https://volcano.si.edu/volcano.cfm?vn=${vn}` }, settingsRef.current.browserNotifs);
+          if (v) {
+            const episodeDate = ongoingRef2.current.get(vn)?.start || new Date().toISOString().slice(0, 10);
+            pushNotif({ key: `e:${vn}:${episodeDate}`, kind: 'eruption', title: t('nt.e.new', { name: v.name }), body: t('nt.e.newBody', { country: v.country }), time: Date.now(), url: `https://volcano.si.edu/volcano.cfm?vn=${vn}` }, settingsRef.current.browserNotifs);
+          }
         }
       }
       for (const vn of eruptingRef.current) {
         if (!eruptingNow.has(vn)) {
           const v = list.find((x) => x.vn === vn);
-          if (v) pushNotif({ key: `e-end:${vn}`, kind: 'eruption', title: t('nt.e.end', { name: v.name }), body: t('nt.e.endBody', { country: v.country }), time: Date.now() }, false);
+          if (v) {
+            const endedDate = new Date().toISOString().slice(0, 10);
+            pushNotif({ key: `e-end:${vn}:${endedDate}`, kind: 'eruption', title: t('nt.e.end', { name: v.name }), body: t('nt.e.endBody', { country: v.country }), time: Date.now() }, false);
+          }
         }
       }
     }
@@ -200,16 +258,24 @@ function Shell() {
 
   /* ---------- Terremotos (inicial + polling) ---------- */
   const fetchQuakes = useCallback(async (first = false) => {
+    if (quakeFetchRunning.current) return;
+    quakeFetchRunning.current = true;
     try {
-      const { quakes: q, source } = await loadQuakes(settingsRef.current.period, settingsRef.current.minMag);
+      const { quakes: q, source } = await loadQuakes(settingsRef.current.period, Math.min(settingsRef.current.minMag, settingsRef.current.alertMag));
       setQuakes(q);
       setQuakeInfo({ id: 'quakes', label: `Terremotos (${source})`, ok: true, updated: Date.now() });
       const now = Date.now();
+      const previousCheck = lastQuakeCheck.current;
       const fresh = q.filter((k) => !seenQuakes.current.has(k.id));
       if (!first && baseline.current.quakes && fresh.length) {
         for (const k of fresh) {
           seenQuakes.current.add(k.id);
-          if (k.mag >= settingsRef.current.alertMag && settingsRef.current.quakeAlerts) {
+          // Não disparar alertas retroativos ao usuário ampliar período/magnitude.
+          // O USGS pode publicar eventos com atraso de alguns minutos (até ~20 min fora dos EUA).
+          // Usamos também a data de atualização do registro, mas só para IDs ainda não vistos.
+          const observedAt = Math.max(Number(k.time) || 0, Number(k.updated) || 0);
+          const arrivedSinceLastCheck = previousCheck > 0 && observedAt >= previousCheck - 25 * 60_000 && k.time <= now + 60_000;
+          if (arrivedSinceLastCheck && k.mag >= settingsRef.current.alertMag && settingsRef.current.quakeAlerts) {
             pushNotif({
               key: `q:${k.id}`, kind: 'quake',
               title: t('nt.q.title', { mag: k.mag.toFixed(1), place: k.place }),
@@ -218,23 +284,75 @@ function Shell() {
             }, settingsRef.current.browserNotifs);
           }
         }
-        localStorage.setItem('tp.seen', JSON.stringify([...seenQuakes.current].slice(-3000)));
       } else {
         for (const k of fresh) seenQuakes.current.add(k.id);
         baseline.current.quakes = true;
-        localStorage.setItem('tp.seen', JSON.stringify([...seenQuakes.current].slice(-3000)));
       }
+      lastQuakeCheck.current = now;
+      try { localStorage.setItem('tp.seen', JSON.stringify([...seenQuakes.current].slice(-3000))); } catch { /* armazenamento opcional */ }
     } catch (e) {
       setQuakeInfo((prev) => ({ ...prev, ok: false, error: String(e) }));
-      pushNotif({ key: 'sys:quakes', kind: 'sistema', title: t('nt.sys.down'), body: t('nt.sys.downBody'), time: Date.now() }, false);
+      pushNotif({ key: `sys:quakes:${Math.floor(Date.now() / 300_000)}`, kind: 'sistema', title: t('nt.sys.down'), body: t('nt.sys.downBody'), time: Date.now() }, false);
+    } finally {
+      quakeFetchRunning.current = false;
     }
   }, [pushNotif, t]);
 
-  useEffect(() => { fetchQuakes(true); }, [settings.period, settings.minMag, settings.showQuakes]);
+  // Na primeira consulta apenas cria a linha de base. Mudanças de filtro não devem
+  // silenciar um terremoto novo que chegou enquanto o usuário ajustava as opções.
+  useEffect(() => { fetchQuakes(!baseline.current.quakes); }, [settings.period, settings.minMag, settings.showQuakes]);
   useEffect(() => {
     const tm = setInterval(() => fetchQuakes(false), POLL_QUAKES);
     return () => clearInterval(tm);
   }, [fetchQuakes]);
+
+  /* ---------- Alertas de tsunami: CAP oficial NOAA PTWC/NTWC ---------- */
+  const fetchTsunami = useCallback(async () => {
+    if (tsunamiFetchRunning.current) return;
+    tsunamiFetchRunning.current = true;
+    try {
+      const data = await loadTsunamiAlerts();
+      setTsunamiAlerts(data.alerts || []);
+      setTsunamiInfo({
+        id: 'tsunami', label: 'NOAA Tsunami Centers', ok: !!data.ok,
+        stale: !!data.stale, updated: data.stamp ? Date.parse(data.stamp) : Date.now(),
+        error: data.errors?.join('; ') || (data.coverage ? data.coverage : undefined),
+      });
+      // O centro de notificações recebe somente alertas operacionais (Watch, Advisory, Warning).
+      // Statements meramente informativos continuam no status da fonte, sem gerar ruído.
+      const current = (data.alerts || []).filter((alert) => alert.actionable);
+      const unseen = current.filter((alert) => !seenTsunami.current.has(`${alert.id}:${alert.sent}`));
+      for (const alert of unseen) {
+        const key = `${alert.id}:${alert.sent}`;
+        seenTsunami.current.add(key);
+        const entry: NotifEntry = {
+          key: `tsunami:${key}`, kind: 'tsunami',
+          title: `🌊 ${alert.level === 'INFORMATION' ? 'Informação de tsunami' : `Alerta de tsunami · ${alert.level}`}: ${alert.area}`,
+          body: `${alert.title}${alert.body ? ` — ${alert.body}` : ''} · ${alert.sourceLabel}`,
+          time: Date.parse(alert.sent) || Date.now(), url: alert.url,
+        };
+        // Alertas já ativos no primeiro carregamento entram no centro, sem disparo sonoro inesperado.
+        if (settingsRef.current.tsunamiAlerts) {
+          pushNotif(entry, tsunamiBaseline.current && settingsRef.current.browserNotifs);
+        }
+      }
+      if (unseen.length) { try { localStorage.setItem('tp.tsunamiSeen', JSON.stringify([...seenTsunami.current].slice(-1000))); } catch { /* armazenamento opcional */ } }
+      tsunamiBaseline.current = true;
+    } catch (error) {
+      setTsunamiInfo((prev) => ({ ...prev, ok: false, error: String((error as Error)?.message || error) }));
+    } finally {
+      tsunamiFetchRunning.current = false;
+    }
+  }, [pushNotif]);
+
+  useEffect(() => {
+    void fetchTsunami();
+    const timer = window.setInterval(() => { void fetchTsunami(); }, POLL_TSUNAMI);
+    const onVisible = () => { if (document.visibilityState === 'visible') void fetchTsunami(); };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('online', onVisible);
+    return () => { clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); window.removeEventListener('online', onVisible); };
+  }, [fetchTsunami]);
 
   /* ---------- Ciclos: erupções (15 min) + reparo de observatórios (5 min enquanto incompleto) ---------- */
   useEffect(() => {
@@ -294,9 +412,30 @@ function Shell() {
         && now - item.ts <= 48 * 60 * 60_000)
       .map((item) => Number(item.volcanoVn)));
     const updated = classifyAll(ongoingRef.current, alertsRef.current);
-    eruptingRef.current = new Set(updated.filter((v) => v.holocene && v.status === 'ERUPCAO').map((v) => v.vn));
+    const nextErupting = new Set(updated.filter((v) => v.holocene && v.status === 'ERUPCAO').map((v) => v.vn));
+    if (reportsBaseline.current && baseline.current.eruptions && settingsRef.current.eruptionAlerts) {
+      for (const vn of nextErupting) {
+        if (eruptingRef.current.has(vn)) continue;
+        const volcano = updated.find((v) => v.vn === vn);
+        if (!volcano) continue;
+        const episode = ongoingRef2.current.get(vn);
+        const supportingReport = reports.items
+          .filter((item) => item.volcanoVn === vn && item.kind === 'OFICIAL' && item.verified === 'CONFIRMADO' && item.cats.includes('ERUPCAO'))
+          .sort((a, b) => b.ts - a.ts)[0];
+        const episodeDate = episode?.start || (supportingReport ? new Date(supportingReport.ts).toISOString().slice(0, 10) : new Date(now).toISOString().slice(0, 10));
+        pushNotif({
+          key: `e:${vn}:${episodeDate}`, kind: 'eruption',
+          title: t('nt.e.new', { name: volcano.name }),
+          body: t('nt.e.newBody', { country: volcano.country }),
+          time: supportingReport?.ts || now,
+          url: `https://volcano.si.edu/volcano.cfm?vn=${vn}`,
+        }, settingsRef.current.browserNotifs);
+      }
+    }
+    eruptingRef.current = nextErupting;
+    reportsBaseline.current = true;
     setVolcanoes(updated);
-  }, [reports, classifyAll]);
+  }, [reports, classifyAll, pushNotif, t]);
 
   /* ---------- Seleção / busca ---------- */
   const pick = useCallback((s: Suggestion) => {
@@ -374,7 +513,7 @@ function Shell() {
     const p = await Notification.requestPermission();
     if (p === 'granted') {
       setSettings((s) => ({ ...s, browserNotifs: true }));
-      try { new Notification('GeoGus', { body: t('nt.enabled') }); } catch { /* ok */ }
+      void showSystemNotification('GeoGus', { body: t('nt.enabled'), tag: 'geogus-permission-test' });
     } else {
       setSettings((s) => ({ ...s, browserNotifs: false }));
     }
@@ -418,6 +557,9 @@ function Shell() {
             {obsInfo[k]!.label} {obsInfo[k]!.ok ? `· ${obsInfo[k]!.stale ? 'cache' : fmtTime(obsInfo[k]!.updated ?? 0)}` : `· ${t('pp.na')}`}
           </span>
         ))}
+        <span className={`chip ${tsunamiInfo.ok ? (tsunamiInfo.stale ? 'stale' : 'ok') : 'err'}`} title={tsunamiInfo.error || 'Alertas oficiais NOAA PTWC/NTWC'}>
+          🌊 Tsunami {tsunamiAlerts.filter((a) => a.actionable).length > 0 ? `· ${tsunamiAlerts.filter((a) => a.actionable).length} alerta(s)` : tsunamiInfo.ok ? '· sem alerta ativo' : '· n/d'}
+        </span>
         <span className="chip stat">{t('stats.24h')} <b>{stats.c24}</b></span>
         <span className="chip stat">{t('stats.7d')} <b>{stats.c7}</b></span>
         <button
@@ -441,6 +583,7 @@ function Shell() {
             </label>
             <label>{t('filters.minMag')}
               <select value={settings.minMag} onChange={(e) => upd({ minMag: Number(e.target.value) })}>
+                <option value={1}>1.0+</option>
                 <option value={1}>1.0+</option>
                 <option value={2.5}>2.5+</option>
                 <option value={4.5}>4.5+</option>
@@ -559,8 +702,21 @@ function Shell() {
               ) : !settings.browserNotifs ? (
                 <button className="btn" onClick={() => upd({ browserNotifs: true })}>{t('nt.reenable')}</button>
               ) : <p className="muted small">{t('nt.enabled')}</p>}
+            {tsunamiAlerts.filter((a) => a.actionable).length > 0 && (
+              <section className="tsunami-active-list">
+                <h3>🌊 Alertas oficiais de tsunami ativos</h3>
+                {tsunamiAlerts.filter((a) => a.actionable).map((alert) => (
+                  <article key={`${alert.id}:${alert.sent}`} className="tsunami-active-item">
+                    <b>{alert.level}: {alert.area}</b>
+                    <p>{alert.title}</p>
+                    <small>{alert.sourceLabel} · {new Date(alert.sent).toLocaleString(locale)}</small>
+                    <a href={alert.url} target="_blank" rel="noreferrer">Boletim oficial ↗</a>
+                  </article>
+                ))}
+              </section>
+            )}
             <ul className="notif-list">
-              {notifs.length === 0 && <li className="empty">{t('nt.empty')} M≥{settings.alertMag.toFixed(1)}</li>}
+              {notifs.length === 0 && <li className="empty">{t('nt.empty')} · M≥{settings.alertMag.toFixed(1)}</li>}
               {notifs.map((n) => (
                 <li key={n.key} className={`n-${n.kind}`}>
                   <div><b>{n.title}</b></div>
@@ -578,11 +734,13 @@ function Shell() {
         <div className="panel-overlay" onClick={() => setShowSettings(false)}>
           <div className="panel" onClick={(e) => e.stopPropagation()}>
             <header><h2>{t('st.title')}</h2><button className="icon-btn" onClick={() => setShowSettings(false)}>✕</button></header>
+            <h3 className="settings-group-title">🌐 Terremotos</h3>
             <label className="chk">{t('st.quakeAlerts')} (M≥{settings.alertMag.toFixed(1)})
               <input type="checkbox" checked={settings.quakeAlerts} onChange={(e) => upd({ quakeAlerts: e.target.checked })} />
             </label>
             <label className="chk">{t('st.alertMin')}
               <select value={settings.alertMag} onChange={(e) => upd({ alertMag: Number(e.target.value) })}>
+                <option value={1}>1.0+</option>
                 <option value={2.5}>2.5+</option>
                 <option value={3}>3.0+</option>
                 <option value={4}>4.0+</option>
@@ -591,9 +749,15 @@ function Shell() {
                 <option value={7}>7.0+</option>
               </select>
             </label>
+            <h3 className="settings-group-title">🌋 Erupções</h3>
             <label className="chk">{t('st.eruptionAlerts')}
               <input type="checkbox" checked={settings.eruptionAlerts} onChange={(e) => upd({ eruptionAlerts: e.target.checked })} />
             </label>
+            <h3 className="settings-group-title">🌊 Tsunami</h3>
+            <label className="chk">{t('st.tsunamiAlerts')}
+              <input type="checkbox" checked={settings.tsunamiAlerts} onChange={(e) => upd({ tsunamiAlerts: e.target.checked })} />
+            </label>
+            <h3 className="settings-group-title">Notificações do dispositivo</h3>
             <label className="chk">{t('st.browserNotifs')}
               <input type="checkbox" checked={settings.browserNotifs} onChange={(e) => e.target.checked ? askBrowserNotifs() : upd({ browserNotifs: false })} />
             </label>

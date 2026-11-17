@@ -1,0 +1,35 @@
+GeoGus — atualização de mapa e experiência mobile
+
+Arquivos alterados:
+- src/components/MapView.tsx
+- src/styles.css
+- src/main.tsx
+- public/sw.js
+- index.html
+- GEOGUS_PROGRESS.md
+
+Mudanças:
+1. Marcadores de vulcões em erupção com pulsação vermelha; ativos/recentes com pulsação âmbar mais lenta.
+2. Todos os terremotos têm marcador pulsante; magnitude acima do limite de alerta recebe pulsação vermelha mais forte.
+3. Em zoom mundial, terremotos próximos são agrupados em círculos com contagem e cor pela maior magnitude; zoom 7+ mostra eventos individuais.
+4. Removidas camadas CircleMarker adicionais por terremoto; os anéis são CSS para reduzir carga.
+5. Leaflet atualiza dimensões por ResizeObserver, resize, orientação e visualViewport.
+6. Mobile: mapa full-screen, busca/status flutuantes, filtros horizontais na parte inferior, painel de listas em bottom sheet, detalhes e notificações adaptados, safe-area e alvos de toque maiores.
+7. Service worker/cache elevado para v8 para evitar assets antigos após deploy.
+
+Aplicação:
+- Extraia os arquivos preservando as pastas sobre a raiz do projeto atual (ou use o ZIP completo).
+- Execute npm ci e npm run build.
+- Se o build passar, commit/push para o GitHub; o Vercel fará o deploy das funções API e do frontend.
+- No dispositivo móvel, abra o endereço HTTPS do GeoGus e, se desejar, use Adicionar à tela inicial.
+
+Validação realizada nesta entrega:
+- Transpilação sintática dos 11 arquivos TS/TSX: aprovada.
+- node --check nos módulos Node, handlers API e service worker: aprovado.
+- JSON de package/vercel/manifest e balanceamento de CSS: aprovados.
+- Backend local /api/health: HTTP 200 JSON; rota API inexistente: HTTP 404 JSON.
+- Build completo/typecheck não foi executado porque npm ci excedeu o tempo limite neste ambiente. Execute localmente antes de publicar.
+
+Sobre a mensagem “A listener indicated an asynchronous response by returning true...”:
+- O código do GeoGus não usa chrome.runtime/browser.runtime nem listeners de extensão.
+- A mensagem costuma vir de uma extensão Chrome que abriu um canal assíncrono e não respondeu a tempo. Após atualizar o service worker, teste em janela anônima com extensões desativadas. Se desaparecer, a origem era uma extensão; o app não consegue corrigir o canal interno de uma extensão.
