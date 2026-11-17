@@ -359,3 +359,52 @@ Este arquivo registra o estado da entrega para permitir retomada em outra sessÃ
 - Incluído `npm run test:brasil` para validar parsing QuakeML e deduplicação sem depender da rede.
 - Testes: parser QuakeML e merge sintético aprovados; 11 arquivos TS/TSX passaram por transpilation syntax check; módulos Node passaram em `node --check`.
 - Build completo ainda não validado: `npm ci` não concluiu dentro do ambiente disponível; `npm run build` encontrou @types incompletos na instalação interrompida.
+
+## 2026-11-17 — Ampliação da central sísmica multiorigem
+
+- Mantidos conectores automáticos USGS ComCat, USGS FDSN regional (segunda via do mesmo catálogo), USP/BRASIS, LabSis/UFRN, SIS-UnB best-effort, SISBRA preliminar, EMSC, GFZ/GEOFON e ISC.
+- NES/Unimontes agora descobre automaticamente os links dos boletins PDF na página institucional e RSS. PDFs são listados como documentos; ainda não são convertidos em eventos porque a extração de tabelas PDF e a separação de sismos naturais/artificiais não foi validada.
+- Corrigida conversão de hora local (UTC-3) em tabelas Unimontes se uma tabela HTML/RSS estruturada for publicada.
+- Melhorada preservação de células vazias em tabelas, para não deslocar colunas do boletim UnB.
+- Status das fontes inclui endpoint, tipo, cobertura, cadência e documentos descobertos.
+- Contagem Brasil/global agora usa coordenadas dentro da caixa geográfica brasileira, não o idioma do campo `place`.
+- A deduplicação mantém fontes coincidentes; USGS FDSN é documentado como segunda via do ComCat, não catálogo independente.
+- EarthScope/IRIS FDSN Event não foi incluído porque foi aposentado em 01/06/2026.
+- Teste determinístico com fetch mockado validou 10 conectores, parsing, timezone, deduplicação e descoberta de PDFs.
+
+
+## 2026-11-17 — Catálogo vulcânico mundial, supervulcões e alertas mais frequentes
+
+### Catálogo mundial e mapa
+- A visualização inicial força `country: ''` e `volcanoFilter: 'all'`, para não reabrir o mapa preso a um país ou somente à aba de erupções.
+- O mapa carrega o catálogo Holoceno do Smithsonian GVP e, em uma camada agrupada separada, o catálogo Pleistoceno. A camada de estruturas geológicas pré-Quaternárias permanece desligada por padrão e separada dessas duas coleções.
+- O catálogo GVP consultado é a cobertura Quaternária do banco: Holoceno (1.214 entradas na edição GVP v5.4.0, 07/08/2026) + Pleistoceno (1.452 entradas, lista preliminar). O número mostrado na interface é dinâmico e depende dos registros com coordenadas válidas retornados pelo WFS; não significa todos os edifícios vulcânicos de toda a história geológica da Terra.
+- Os marcadores Pleistocenos usam camada violeta própria com clustering; vulcões Holocenos permanecem na camada operacional; estruturas pré-Quaternárias brasileiras continuam numa flag independente.
+- Supervulcões/grandes caldeiras destacados em camada própria: Yellowstone, Long Valley, Valles Caldera, Toba e Taupo. A seleção segue exemplos de sistemas com supererupções VEI 8 descritos pelo USGS; o termo não é uma categoria universal padronizada nem indica perigo ou atividade atual.
+- A camada Pleistoceno tenta novamente a cada 2 minutos e ao restabelecer conexão. Uma resposta vazia não é gravada como catálogo válido no cache.
+- Catálogo Holoceno também tenta novamente a cada 2 minutos se a consulta inicial falhar. Coleta de alertas e relatórios continua independente do sucesso inicial do catálogo.
+- O foco/busca de supervulcões encontra o marcador especial pelo nome correto.
+
+### Alertas e desempenho
+- Polling de estado vulcânico reduzido para 60 segundos; cache de alertas PHIVOLCS, PVMBG e USGS HANS reduzido para 45 segundos; cache da consulta GVP `ContinuingEruption` reduzido para 45 segundos, com stale-while-revalidate.
+- Falha do WFS de erupções contínuas não bloqueia atualização de alertas recebidos de USGS HANS, PHIVOLCS ou PVMBG; a última lista contínua válida é preservada até recuperação do GVP.
+- Atualizações de erupção continuam ao retornar à aba e ao recuperar a conexão. Fontes podem publicar em cadências próprias; polling de 60 segundos não transforma um boletim diário em feed instantâneo.
+- `MapView.tsx` calcula uma assinatura visual dos dados de vulcões e erupções e só reconstrói marcadores quando coordenadas, status, alerta ou atividade mudam. Isso evita recriar milhares de pins a cada ciclo de polling sem mudança real.
+- MarkerClusterGroup foi configurado para carregamento em blocos e remoção de marcadores fora da área visível. Em visão mundial, os pins são agrupados; ao aproximar o zoom, são individualizados.
+
+### Testes desta alteração
+- 12 arquivos TypeScript/TSX passaram por transpilation syntax check com TypeScript global; zero diagnósticos de sintaxe.
+- `node --check` em funções Vercel, servidor e scripts `.mjs`: aprovado.
+- `npm run test:brasil` (parser QuakeML, origem de dados e deduplicação sísmica já existente): aprovado.
+- JSON de `package.json`, `tsconfig*.json` e `vercel.json`: válido.
+- O ambiente desta sessão não contém `node_modules`; não foi possível fazer o typecheck completo de `tsc -b` nem um `vite build`. Fazer `npm ci` e `npm run build` no computador antes de publicar.
+- A rede do ambiente de trabalho não resolveu DNS externo para `webservices.volcano.si.edu`; o WFS, observatórios e alertas não foram testados ao vivo nesta execução. Disponibilidade e dados reais devem ser verificados após deploy.
+
+## 2026-11-17 — Cobertura vulcânica global e caldeiras especiais
+- Reforcei a paginação WFS para catálogo Holoceno e Pleistoceno; se `numberMatched` exceder a primeira página, consulta páginas adicionais até limite defensivo de 20.000 por camada.
+- Removi a dependência do catálogo Holoceno para iniciar a consulta Pleistoceno; cada camada pode ser carregada e recuperada de forma independente.
+- Ampliei a assinatura visual do `MapView` para incluir nome, país, tipo, elevação e metadados de imagem, evitando popups desatualizados depois de revalidação do catálogo.
+- Mantidos todos os registros Quaternários do GVP com coordenadas válidas (Holoceno + Pleistoceno); os pins são agrupados em visão mundial e individualizados com zoom.
+- Supervulcões/grandes caldeiras destacados: Yellowstone, Long Valley, Toba e Taupo aparecem entre os exemplos citados pelo USGS de supervulcões/supererupções; Valles e Campi Flegrei são rotulados como grandes sistemas de caldeira sem afirmar VEI 8 confirmado; Aira e Aniakchak são grandes caldeiras candidatas/de interesse, também sem afirmar VEI 8 confirmado.
+- Adicionados fallbacks coordenados independentes do GVP para os oito marcadores de destaque, para que apareçam mesmo se o catálogo remoto não tiver concluído o carregamento. A ficha GVP prevalece quando disponível.
+- Polling dos alertas vulcânicos continua a cada 60 segundos em GVP WFS, USGS HANS, PHIVOLCS e PVMBG; o intervalo de consulta não altera a cadência de publicação das fontes.

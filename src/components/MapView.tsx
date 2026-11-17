@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet.markercluster';
 import 'leaflet/dist/leaflet.css';
@@ -8,6 +8,7 @@ import type { Quake, Volcano, Settings } from '../types';
 import { useI18n } from '../i18n';
 import { commonsImage, GVP_IMAGE_URL } from '../api';
 import { HISTORICAL_GEOLOGY, type HistoricalGeologyFeature } from '../historicalGeology';
+import { SUPER_VOLCANOES, SUPER_VOLCANO_IDS } from '../supervolcanoes';
 
 export const STATUS_META: Record<string, { color: string }> = {
   ERUPCAO: { color: '#ff3b30' },
@@ -23,14 +24,9 @@ const magColor = (m: number) => (m >= 6 ? '#ff3b30' : m >= 5 ? '#ff9f0a' : m >= 
 const fmtDT = (t: number, locale: string) =>
   new Date(t).toLocaleString(locale, { dateStyle: 'short', timeStyle: 'short' });
 
-/** Verdadeiro apenas para eventos ocorridos no dia civil local do usuário. */
-function isTodayLocal(timestamp: number): boolean {
-  if (!Number.isFinite(timestamp)) return false;
-  const eventDate = new Date(timestamp);
-  const today = new Date();
-  return eventDate.getFullYear() === today.getFullYear()
-    && eventDate.getMonth() === today.getMonth()
-    && eventDate.getDate() === today.getDate();
+/** Janela móvel de 24 h, alinhada ao filtro padrão da atividade sísmica. */
+function isWithinLast24Hours(timestamp: number, reference = Date.now()): boolean {
+  return Number.isFinite(timestamp) && timestamp >= reference - 24 * 60 * 60_000 && timestamp <= reference + 60_000;
 }
 
 const VOLCANO_PATH = 'M2 21 L9 7 L11.2 11.5 L12.5 9 L14 12 L15 9.5 L22 21 Z';
@@ -39,12 +35,15 @@ const BOLT_PATH = 'M13.5 2 L4.5 13.5 L10 13.5 L8.5 22 L19.5 10 L13 10 Z';
 function volcanoIcon(v: Volcano): L.DivIcon {
   const c = STATUS_META[v.status]?.color ?? '#8e8e93';
   const erupting = v.status === 'ERUPCAO';
-  const active = v.status === 'ATIVO' || v.status === 'RECENTE';
-  const size = erupting ? 28 : 22;
+  const recent = v.status === 'RECENTE';
+  const active = v.status === 'ATIVO';
+  const size = erupting ? 30 : recent ? 25 : 22;
+  const pulseClass = erupting ? 'erupting' : recent ? 'recent' : active ? 'active' : '';
   return L.divIcon({
     className: 'volc-icon-wrap',
-    // Somente erupções confirmadas em andamento pulsam. Ativo/recente permanece estático.
-    html: `<div class="volc-icon ${erupting ? 'erupting' : active ? 'recent' : ''}" style="--c:${c};--marker-size:${size}px" role="img" aria-label="${v.name}${erupting ? ' — em erupção' : active ? ' — atividade recente/ativa' : ''}">` +
+    // Pulsação em camadas: erupção confirmada (rápida), atividade recente
+    // (média) e vulcão ativo (lenta e discreta).
+    html: `<div class="volc-icon ${pulseClass}" style="--c:${c};--marker-size:${size}px" role="img" aria-label="${v.name}${erupting ? ' — em erupção' : recent ? ' — atividade recente' : active ? ' — vulcão ativo' : ''}">` +
       `<svg viewBox="0 0 24 24" width="${erupting ? 20 : 16}" height="${erupting ? 20 : 16}" aria-hidden="true">` +
       `<path d="${VOLCANO_PATH}" fill="${c}" stroke="rgba(0,0,0,.72)" stroke-width="1.2" stroke-linejoin="round"/>` +
       (erupting ? '<circle cx="12" cy="6" r="1.7" fill="#fff" opacity=".92"/><circle cx="14.6" cy="3.8" r="1.15" fill="#fff" opacity=".65"/>' : '') +
@@ -60,18 +59,69 @@ function quakeClusterIcon(cluster: any): L.DivIcon {
   const maxMag = children.reduce((max, marker) => Math.max(max, Number((marker.options as any).quakeMag ?? 0)), 0);
   const count = cluster.getChildCount();
   const tone = maxMag >= 6 ? '#ff3b30' : maxMag >= 4.5 ? '#ff9f0a' : '#64d2ff';
-  const hasToday = children.some((marker) => Boolean((marker.options as any).quakeToday));
+  const hasRecent = children.some((marker) => Boolean((marker.options as any).quakeRecent24));
   const size = count >= 100 ? 44 : count >= 10 ? 38 : 32;
   return L.divIcon({
     className: 'quake-cluster-wrap',
-    // O agrupamento só pulsa se contiver ao menos um tremor ocorrido hoje.
-    html: `<span class="quake-cluster ${hasToday ? 'quake-cluster-live' : ''} ${maxMag >= 4.5 ? 'quake-cluster-highmag' : ''}" style="--cluster-color:${tone};--cluster-size:${size}px">${count}</span>`,
+    // O agrupamento pulsa quando contém eventos da janela móvel de 24 h.
+    html: `<span class="quake-cluster ${hasRecent ? 'quake-cluster-live' : ''} ${maxMag >= 4.5 ? 'quake-cluster-highmag' : ''}" style="--cluster-color:${tone};--cluster-size:${size}px">${count}</span>`,
     iconSize: [size, size],
     iconAnchor: [size / 2, size / 2],
   });
 }
 
 /** Ícone separado: estrutura geológica antiga, não um vulcão em atividade. */
+function pleistoceneVolcanoIcon(): L.DivIcon {
+  return L.divIcon({
+    className: 'pleistocene-volcano-wrap',
+    html: `<span class="pleistocene-volcano-marker" aria-hidden="true"><svg viewBox="0 0 24 24" width="17" height="17"><path d="${VOLCANO_PATH}" fill="#a78bfa" stroke="#171326" stroke-width="1.2" stroke-linejoin="round"/></svg></span>`,
+    iconSize: [25, 25], iconAnchor: [12.5, 12.5],
+  });
+}
+
+function pleistoceneClusterIcon(cluster: any): L.DivIcon {
+  const count = cluster.getChildCount();
+  const size = count >= 100 ? 43 : count >= 10 ? 37 : 31;
+  return L.divIcon({
+    className: 'pleistocene-cluster-wrap',
+    html: `<span class="pleistocene-cluster" style="--cluster-size:${size}px">${count}</span>`,
+    iconSize: [size, size], iconAnchor: [size / 2, size / 2],
+  });
+}
+
+function superVolcanoIcon(): L.DivIcon {
+  return L.divIcon({
+    className: 'super-volcano-wrap',
+    html: '<span class="super-volcano-marker" aria-hidden="true">✦</span>',
+    iconSize: [36, 36], iconAnchor: [18, 18],
+  });
+}
+
+function superVolcanoPopup(volcano: Volcano): HTMLElement {
+  const info = SUPER_VOLCANOES[volcano.vn];
+  const root = document.createElement('div'); root.className = 'historical-geo-popup super-volcano-popup';
+  const title = document.createElement('h3'); title.textContent = info?.displayName || volcano.name; root.appendChild(title);
+  const badge = document.createElement('div'); badge.className = 'super-volcano-badge';
+  badge.textContent = info?.classification === 'supereruption-documented'
+    ? 'SISTEMA ASSOCIADO A SUPERERUPÇÃO · VEI 8'
+    : info?.classification === 'large-caldera-system'
+      ? 'GRANDE SISTEMA DE CALDEIRA · NÃO VEI 8 CONFIRMADO'
+      : 'GRANDE CALDEIRA · CANDIDATA / SISTEMA DE INTERESSE';
+  root.appendChild(badge);
+  const region = document.createElement('p'); region.textContent = `${volcano.country} · ${volcano.type}`; root.appendChild(region);
+  const evidence = document.createElement('p'); evidence.textContent = info?.evidence || 'Sistema de grande caldeira selecionado para destaque no mapa.'; root.appendChild(evidence);
+  const note = document.createElement('p'); note.className = 'historical-geo-note';
+  note.textContent = info?.classification === 'supereruption-documented'
+    ? 'Este sistema é citado pelo USGS entre os exemplos de supervulcões/supererupções. A classificação descreve somente seu histórico e não indica atividade, alerta ou perigo iminente.'
+    : info?.classification === 'large-caldera-system'
+      ? 'Este sistema é destacado por ser uma grande caldeira. Isso não significa que tenha uma supererupção VEI 8 confirmada, nem indica atividade, alerta ou perigo iminente.'
+      : 'Este sistema foi incluído como grande caldeira candidata/de interesse. Isso não comprova uma supererupção VEI 8. Não indica atividade, alerta ou perigo iminente.';
+  root.appendChild(note);
+  const gvp = document.createElement('a'); gvp.href = `https://volcano.si.edu/volcano.cfm?vn=${volcano.vn}`; gvp.target = '_blank'; gvp.rel = 'noopener noreferrer'; gvp.textContent = 'Perfil do Smithsonian GVP ↗'; root.appendChild(gvp);
+  const source = document.createElement('a'); source.href = info?.sourceUrl || 'https://www.usgs.gov/faqs/what-a-supervolcano-what-a-supereruption'; source.target = '_blank'; source.rel = 'noopener noreferrer'; source.textContent = `Evidência: ${info?.sourceLabel || 'USGS'} ↗`; root.appendChild(source);
+  return root;
+}
+
 function historicalGeologyIcon(): L.DivIcon {
   return L.divIcon({
     className: 'historical-geo-icon-wrap',
@@ -244,10 +294,11 @@ function quakeMarker(q: Quake, onSelect: (q: Quake) => void, alertMag: number, t
   const c = magColor(q.mag);
   const s = Math.round(Math.max(13, Math.min(34, 9 + q.mag * 3.4)));
   const alerted = q.mag >= alertMag;
-  const today = isTodayLocal(q.time);
+  const recent24 = isWithinLast24Hours(q.time);
+  const pulsing = recent24 || alerted;
   const icon = L.divIcon({
     className: 'quake-icon-wrap',
-    html: `<div class="quake-icon ${today ? 'pulsing-today' : ''} ${alerted ? 'alerted' : ''}" style="--c:${c};--marker-size:${s}px" role="img" aria-label="Terremoto magnitude ${q.mag?.toFixed(1) ?? 'não disponível'}${today ? ', hoje' : ''}">` +
+    html: `<div class="quake-icon ${pulsing ? 'pulsing-recent' : ''} ${alerted ? 'alerted' : ''}" style="--c:${c};--marker-size:${s}px" role="img" aria-label="Terremoto magnitude ${q.mag?.toFixed(1) ?? 'não disponível'}${recent24 ? ', nas últimas 24 horas' : ''}${alerted ? ', acima do limite de alerta' : ''}">` +
       `<svg viewBox="0 0 24 24" width="${s}" height="${s}" aria-hidden="true">` +
       `<path d="${BOLT_PATH}" fill="${c}" stroke="rgba(0,0,0,.78)" stroke-width="1.1" stroke-linejoin="round"/>` +
       '</svg></div>',
@@ -257,8 +308,8 @@ function quakeMarker(q: Quake, onSelect: (q: Quake) => void, alertMag: number, t
   const m = L.marker([q.lat, q.lon], {
     icon, title: `M ${q.mag?.toFixed(1) ?? '?'}`, riseOnHover: true, zIndexOffset: 650,
   });
-  (m.options as L.MarkerOptions & { quakeMag?: number; quakeToday?: boolean }).quakeMag = q.mag;
-  (m.options as L.MarkerOptions & { quakeMag?: number; quakeToday?: boolean }).quakeToday = today;
+  (m.options as L.MarkerOptions & { quakeMag?: number; quakeRecent24?: boolean }).quakeMag = q.mag;
+  (m.options as L.MarkerOptions & { quakeMag?: number; quakeRecent24?: boolean }).quakeRecent24 = recent24;
   m.bindPopup(() => quakePopupHtml(q, t, locale), { maxWidth: 300 });
   m.on('click', () => onSelect(q));
   return m;
@@ -278,15 +329,49 @@ interface Props {
 }
 
 export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing, onSelectQuake, onSelectVolcano, onKnowMore, focus, mapRef }: Props) {
+  const [legendCollapsed, setLegendCollapsed] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      const saved = localStorage.getItem('tp.mapLegendCollapsed');
+      if (saved !== null) return saved === '1';
+    } catch { /* armazenamento opcional */ }
+    return window.matchMedia('(max-width: 900px)').matches;
+  });
   const divRef = useRef<HTMLDivElement>(null);
   const qCluster = useRef<L.MarkerClusterGroup | null>(null);
   const vCluster = useRef<L.MarkerClusterGroup | null>(null);
   const vClusterFlat = useRef<L.LayerGroup | null>(null);
   const historicalLayer = useRef<L.LayerGroup | null>(null);
+  const pleistoceneLayer = useRef<L.MarkerClusterGroup | null>(null);
+  const superLayer = useRef<L.LayerGroup | null>(null);
   const ringRef = useRef<L.Layer | null>(null);
+  const volcanoesRef = useRef(volcanoes);
+  volcanoesRef.current = volcanoes;
+  const ongoingRef = useRef(ongoing);
+  ongoingRef.current = ongoing;
+  // O backend reclassifica os vulcões a cada ciclo de alertas. Só reconstruímos
+  // marcadores se coordenadas, status, alerta ou descrição visual realmente mudarem.
+  const volcanoMarkerKey = useMemo(() => volcanoes.map((v) => [
+    // Incluir todos os atributos usados em popups/ícones evita manter pins
+    // visualmente antigos quando o catálogo é revalidado no Vercel.
+    v.vn, v.name, v.country, v.type, v.lat, v.lon, v.elevation ?? '',
+    v.holocene ? 1 : 0, v.status, v.lastEruption ?? '',
+    v.alertInfo?.source || '', v.alertInfo?.level || '',
+    v.alertInfo?.noticeTime || '', v.alertInfo?.details || '',
+    v.image?.file || '', v.image?.caption || '', v.image?.credit || '',
+    (v.activity || []).join(','),
+  ].join('~')).join('|'), [volcanoes]);
+  const ongoingMarkerKey = useMemo(() => [...(ongoing || new Map()).entries()]
+    .sort((a, b) => Number(a[0]) - Number(b[0]))
+    .map(([vn, item]) => `${vn}:${item.start}:${item.end || ''}:${item.vei ?? ''}`).join('|'), [ongoing]);
   const cbRef = useRef({ onSelectQuake, onSelectVolcano, onKnowMore });
   cbRef.current = { onSelectQuake, onSelectVolcano, onKnowMore };
   const { t, locale } = useI18n();
+
+  useEffect(() => {
+    try { localStorage.setItem('tp.mapLegendCollapsed', legendCollapsed ? '1' : '0'); }
+    catch { /* armazenamento opcional */ }
+  }, [legendCollapsed]);
 
   useEffect(() => {
     const container = divRef.current;
@@ -313,13 +398,16 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
       spiderfyOnMaxZoom: true, zoomToBoundsOnClick: true, disableClusteringAtZoom: 7,
       iconCreateFunction: quakeClusterIcon,
     });
-    vCluster.current = L.markerClusterGroup({ maxClusterRadius: 35, showCoverageOnHover: false, chunkedLoading: true, disableClusteringAtZoom: 9 });
+    vCluster.current = L.markerClusterGroup({ maxClusterRadius: 32, showCoverageOnHover: false, chunkedLoading: true, chunkInterval: 120, chunkDelay: 20, animateAddingMarkers: false, removeOutsideVisibleBounds: true, disableClusteringAtZoom: 9 });
     vClusterFlat.current = L.layerGroup();
-    historicalLayer.current = L.markerClusterGroup({ maxClusterRadius: 42, showCoverageOnHover: false, chunkedLoading: true });
+    historicalLayer.current = L.layerGroup();
+    pleistoceneLayer.current = L.markerClusterGroup({ maxClusterRadius: 34, showCoverageOnHover: false, chunkedLoading: true, chunkInterval: 120, chunkDelay: 20, animateAddingMarkers: false, removeOutsideVisibleBounds: true, iconCreateFunction: pleistoceneClusterIcon });
+    superLayer.current = L.layerGroup();
     map.addLayer(vCluster.current);
     map.addLayer(vClusterFlat.current);
-    // A camada histórica começa desligada; o usuário a ativa pela flag independente.
     map.addLayer(qCluster.current);
+    map.addLayer(pleistoceneLayer.current);
+    map.addLayer(superLayer.current);
 
     // Leaflet precisa recalcular o viewport quando o layout muda (mobile,
     // rotação, abertura de painel, endereço do navegador ou redimensionamento).
@@ -345,7 +433,7 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
       window.removeEventListener('orientationchange', invalidate);
       window.visualViewport?.removeEventListener('resize', invalidate);
       document.removeEventListener('click', (map as any)._delegated);
-      map.remove(); mapRef.current = null; historicalLayer.current = null;
+      map.remove(); mapRef.current = null; historicalLayer.current = null; pleistoceneLayer.current = null; superLayer.current = null;
     };
   }, []);
 
@@ -357,23 +445,92 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
     vCluster.current.clearLayers();
     vClusterFlat.current.clearLayers();
     if (settings.showVolcanoes) {
-      for (const v of volcanoes) {
-        // Registros GVP do Pleistoceno aparecem somente na camada histórica dedicada.
-        if (!v.holocene) continue;
+      for (const v of volcanoesRef.current) {
+        // Registros do Pleistoceno e supervulcões têm camadas próprias para evitar duplicação.
+        if (!v.holocene || SUPER_VOLCANO_IDS.has(v.vn)) continue;
         if (settings.country && v.country !== settings.country) continue;
         if (settings.volcanoFilter === 'active' && !(v.status === 'ERUPCAO' || v.status === 'ATIVO')) continue;
         if (settings.volcanoFilter === 'inactive' && (v.status === 'ERUPCAO' || v.status === 'ATIVO')) continue;
         if (flat && v.status !== 'ERUPCAO') continue;
         const m = L.marker([v.lat, v.lon], { icon: volcanoIcon(v), title: v.name, riseOnHover: true, zIndexOffset: v.status === 'ERUPCAO' ? 900 : 450 });
-        m.bindPopup(() => volcanoPopupHtml(v, ongoing, t), { maxWidth: 300 });
+        m.bindPopup(() => volcanoPopupHtml(v, ongoingRef.current, t), { maxWidth: 300 });
         m.on('click', () => cbRef.current.onSelectVolcano(v));
         g.addLayer(m);
       }
     }
-  }, [volcanoes, ongoing, settings.showVolcanoes, settings.country, settings.volcanoFilter, t]);
+  }, [volcanoMarkerKey, ongoingMarkerKey, settings.showVolcanoes, settings.country, settings.volcanoFilter, t]);
 
-  // Camada histórica independente, desativada por padrão. Inclui o catálogo
-  // preliminar do GVP para o Pleistoceno + estruturas antigas documentadas separadamente.
+  // Vulcões do Pleistoceno: catálogo mundial do GVP (camada distinta dos Holocenos).
+  useEffect(() => {
+    const map = mapRef.current;
+    const group = pleistoceneLayer.current;
+    if (!map || !group) return;
+    group.clearLayers();
+    const filterAllowsHistorical = settings.volcanoFilter === 'all' || settings.volcanoFilter === 'inactive';
+    const visible = settings.showVolcanoes && settings.showPleistoceneVolcanoes && filterAllowsHistorical;
+    if (!visible) {
+      if (map.hasLayer(group)) map.removeLayer(group);
+      return;
+    }
+    if (!map.hasLayer(group)) map.addLayer(group);
+    for (const volcano of volcanoesRef.current) {
+      if (volcano.holocene || SUPER_VOLCANO_IDS.has(volcano.vn)) continue;
+      if (settings.country && volcano.country !== settings.country) continue;
+      if (!Number.isFinite(volcano.lat) || !Number.isFinite(volcano.lon)) continue;
+      const marker = L.marker([volcano.lat, volcano.lon], {
+        icon: pleistoceneVolcanoIcon(), title: volcano.name,
+        alt: 'Vulcão do catálogo Pleistoceno do Smithsonian GVP; sem atividade atual confirmada',
+      });
+      marker.bindPopup(() => pleistoceneVolcanoPopup(volcano), { maxWidth: 350 });
+      marker.on('click', () => cbRef.current.onSelectVolcano(volcano));
+      group.addLayer(marker);
+    }
+  }, [volcanoMarkerKey, settings.showVolcanoes, settings.showPleistoceneVolcanoes, settings.volcanoFilter, settings.country]);
+
+  // Supervulcões/grandes caldeiras: camada própria e destacada, sem duplicar
+  // marcadores do catálogo Holoceno/Pleistoceno.
+  useEffect(() => {
+    const map = mapRef.current;
+    const group = superLayer.current;
+    if (!map || !group) return;
+    group.clearLayers();
+    const visibleByFilter = (v: Volcano) => {
+      if (settings.volcanoFilter === 'erupting') return v.status === 'ERUPCAO';
+      if (settings.volcanoFilter === 'active') return v.status === 'ERUPCAO' || v.status === 'ATIVO';
+      if (settings.volcanoFilter === 'inactive') return v.status !== 'ERUPCAO' && v.status !== 'ATIVO';
+      return true;
+    };
+    if (!settings.showVolcanoes || !settings.showSupervolcanoes) {
+      if (map.hasLayer(group)) map.removeLayer(group);
+      return;
+    }
+    if (!map.hasLayer(group)) map.addLayer(group);
+    const byId = new Map(volcanoesRef.current.map((v) => [Number(v.vn), v]));
+    for (const id of SUPER_VOLCANO_IDS) {
+      const info = SUPER_VOLCANOES[id];
+      if (!info) continue;
+      // A camada especial não depende da resposta do GVP para aparecer:
+      // usa a coordenada curada documentada como fallback até o catálogo chegar.
+      const volcano: Volcano = byId.get(id) ?? {
+        vn: id, name: info.displayName, country: info.country, type: 'Grande caldeira',
+        lastEruption: null, elevation: null, lat: info.lat, lon: info.lon,
+        status: 'EXTINTO', holocene: false,
+      };
+      if (!visibleByFilter(volcano)) continue;
+      if (settings.country && volcano.country !== settings.country) continue;
+      if (!Number.isFinite(volcano.lat) || !Number.isFinite(volcano.lon)) continue;
+      const marker = L.marker([volcano.lat, volcano.lon], {
+        icon: superVolcanoIcon(), title: info.displayName,
+        alt: `Grande caldeira ${info.displayName}; classificação histórica, sem indicação de atividade atual`, zIndexOffset: 1200,
+      });
+      marker.bindPopup(() => superVolcanoPopup(volcano), { maxWidth: 360 });
+      marker.on('click', () => cbRef.current.onSelectVolcano(volcano));
+      group.addLayer(marker);
+    }
+  }, [volcanoMarkerKey, settings.showVolcanoes, settings.showSupervolcanoes, settings.volcanoFilter, settings.country]);
+
+  // Estruturas geológicas muito antigas (ex.: Mendanha/Amazônia): camada manual
+  // separada do catálogo de vulcões Holocenos e Pleistocenos.
   useEffect(() => {
     const map = mapRef.current;
     const group = historicalLayer.current;
@@ -384,33 +541,16 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
       return;
     }
     if (!map.hasLayer(group)) map.addLayer(group);
-    for (const volcano of volcanoes) {
-      if (volcano.holocene) continue;
-      if (settings.country && volcano.country !== settings.country) continue;
-      if (!Number.isFinite(volcano.lat) || !Number.isFinite(volcano.lon)) continue;
-      const marker = L.marker([volcano.lat, volcano.lon], {
-        icon: historicalGeologyIcon(),
-        title: volcano.name,
-        alt: 'Vulcão listado pelo Smithsonian GVP no Pleistoceno; sem atividade atual confirmada',
-      });
-      marker.bindPopup(() => pleistoceneVolcanoPopup(volcano), { maxWidth: 350 });
-      group.addLayer(marker);
-    }
     for (const feature of HISTORICAL_GEOLOGY) {
       if (settings.country && feature.country !== settings.country) continue;
-      // Evita duplicar um complexo antigo que também esteja representado no catálogo Pleistoceno do GVP.
-      const representedByGvp = volcanoes.some((volcano) => !volcano.holocene
-        && map.distance([volcano.lat, volcano.lon], [feature.lat, feature.lon]) < 12_000);
-      if (representedByGvp) continue;
       const marker = L.marker([feature.lat, feature.lon], {
-        icon: historicalGeologyIcon(),
-        title: feature.name,
+        icon: historicalGeologyIcon(), title: feature.name,
         alt: 'Estrutura geológica histórica, sem atividade atual confirmada',
       });
       marker.bindPopup(() => historicalGeologyPopup(feature), { maxWidth: 340 });
       group.addLayer(marker);
     }
-  }, [volcanoes, settings.showHistoricalGeology, settings.country]);
+  }, [settings.showHistoricalGeology, settings.country]);
 
   // terremotos
   useEffect(() => {
@@ -439,16 +579,15 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
     if (focus.kind !== 'quake' && focus.name) {
       tp = setTimeout(() => {
         let marker: L.Marker | null = null;
-        for (const g of [vClusterFlat.current, vCluster.current, historicalLayer.current]) {
+        for (const g of [superLayer.current, vClusterFlat.current, vCluster.current, pleistoceneLayer.current, historicalLayer.current]) {
           const hit = (g as L.LayerGroup | null)?.getLayers?.().find((l: any) => l.options?.title === focus.name);
           if (hit) { marker = hit as L.Marker; break; }
         }
         if (!marker) return;
         // Garante que pontos da camada histórica agrupada sejam revelados antes do popup.
         const popupZoom = focus.kind === 'volcano' ? 10 : Math.max(focus.zoom, 7);
-        if (historicalLayer.current && historicalLayer.current.hasLayer(marker)) {
-          const historyCluster = historicalLayer.current as L.MarkerClusterGroup;
-          historyCluster.zoomToShowLayer(marker, () => marker?.openPopup());
+        if (pleistoceneLayer.current && pleistoceneLayer.current.hasLayer(marker)) {
+          pleistoceneLayer.current.zoomToShowLayer(marker, () => marker?.openPopup());
         } else {
           if (map.getZoom() < popupZoom) map.setView(marker.getLatLng(), popupZoom, { animate: false });
           marker.openPopup();
@@ -458,20 +597,46 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
     return () => { clearTimeout(tm); if (tp) clearTimeout(tp); ring.remove(); };
   }, [focus]);
 
+  const mapAlertCounts = useMemo(() => ({
+    earthquakes: quakes.filter((quake) => Number.isFinite(quake.mag) && quake.mag >= alertMag).length,
+    volcanoes: volcanoes.filter((volcano) => Boolean(volcano.alertInfo)).length,
+  }), [quakes, volcanoes, alertMag]);
+
   return (
     <>
       <div ref={divRef} className="mapview" />
-      <div className="legend">
-        <b>{t('legend.title')}</b>
-        <span><i className="lg tri erup" /> {t('legend.erupting')}</span>
-        <span><i className="lg tri recent" /> {t('legend.recent')}</span>
-        <span><i className="lg tri ativo" /> {t('legend.active')}</span>
-        <span><i className="lg tri dormente" /> {t('legend.dormant')}</span>
-        <span><i className="lg tri extinto" /> {t('legend.extinct')}</span>
-        {settings.showHistoricalGeology && <span><i className="lg-historical">◇</i> Estruturas antigas / vulcões do Pleistoceno (camada independente)</span>}
-        <span><i className="lg bolt"><svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d={BOLT_PATH} fill="#64d2ff" /></svg></i> {t('legend.quake')}</span>
-        <span className="muted small">{t('pp.source')}: Smithsonian GVP · USGS/EMSC · Esri/OSM</span>
-      </div>
+      {(mapAlertCounts.earthquakes > 0 || mapAlertCounts.volcanoes > 0) && (
+        <div className="map-alert-summary" role="status" aria-live="polite">
+          <span className="map-alert-summary-title">⚠ Alertas no mapa</span>
+          {mapAlertCounts.earthquakes > 0 && <span>Terremotos ≥ M{alertMag.toFixed(1)}: <b>{mapAlertCounts.earthquakes}</b></span>}
+          {mapAlertCounts.volcanoes > 0 && <span>Boletins vulcânicos: <b>{mapAlertCounts.volcanoes}</b></span>}
+        </div>
+      )}
+      <section className={`legend ${legendCollapsed ? 'collapsed' : 'expanded'}`} aria-label={t('legend.title')}>
+        <button
+          type="button"
+          className="legend-toggle"
+          aria-expanded={!legendCollapsed}
+          aria-controls="map-legend-content"
+          onClick={() => setLegendCollapsed((value) => !value)}
+          title={legendCollapsed ? 'Expandir legenda do mapa' : 'Minimizar legenda do mapa'}
+        >
+          <span>{t('legend.title')}</span><span className="legend-chevron" aria-hidden="true">{legendCollapsed ? '＋' : '−'}</span>
+        </button>
+        <div id="map-legend-content" className="legend-content" aria-hidden={legendCollapsed}>
+          <span><i className="lg tri erup" /> {t('legend.erupting')}</span>
+          <span><i className="lg tri recent" /> {t('legend.recent')}</span>
+          <span><i className="lg tri ativo" /> {t('legend.active')}</span>
+          <span><i className="lg tri dormente" /> {t('legend.dormant')}</span>
+          <span><i className="lg tri extinto" /> {t('legend.extinct')}</span>
+          {settings.showPleistoceneVolcanoes && <span><i className="lg-historical">△</i> Vulcões do Pleistoceno (catálogo mundial GVP)</span>}
+          {settings.showSupervolcanoes && <span><i className="lg-super">✦</i> Supererupções documentadas / grandes caldeiras candidatas</span>}
+          {settings.showHistoricalGeology && <span><i className="lg-historical">◇</i> Estruturas geológicas muito antigas</span>}
+          <span><i className="lg bolt"><svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d={BOLT_PATH} fill="#64d2ff" /></svg></i> {t('legend.quake')}</span>
+          <span><i className="lg-alert" /> Terremoto acima do limite de alerta</span>
+          <span className="muted small">{t('pp.source')}: Smithsonian GVP · USGS/EMSC · Esri/OSM</span>
+        </div>
+      </section>
     </>
   );
 }

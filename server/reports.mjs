@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 const TTL_OBS = 10 * 60_000;
+// Cache curto para níveis de alerta operacionais; notícias e relatórios mantêm TTL maior.
+const TTL_VOLCANO_ALERTS = 45 * 1000;
 const TTL_REPORTS = 5 * 60_000;
 const TTL_CAT = 12 * 3600e3;
 const SOURCE_TIMEOUT = { catalog: 8_000, phivolcs: 7_000, bulletin: 3_500, pvmbg: 7_000, usgs: 7_000, news: 5_500, gvp: 6_000, ai: 4_000 };
@@ -237,7 +239,7 @@ function interpret(text) {
 
 /* ============================ Coletores ============================ */
 export async function getPhivolcs() {
-  return cachedFetch('phivolcs', TTL_OBS, async () => {
+  return cachedFetch('phivolcs', TTL_VOLCANO_ALERTS, async () => {
     const errors = [];
     let html = '';
     try {
@@ -302,7 +304,7 @@ export async function getPhivolcs() {
 }
 
 export async function getPvmbg() {
-  return cachedFetch('pvmbg', TTL_OBS, async () => {
+  return cachedFetch('pvmbg', TTL_VOLCANO_ALERTS, async () => {
     const [tingkatResult, laporanResult] = await Promise.allSettled([
       getHTML('https://magma.esdm.go.id/v1/gunung-api/tingkat-aktivitas', SOURCE_TIMEOUT.pvmbg),
       getHTML('https://magma.esdm.go.id/v1/gunung-api/laporan', SOURCE_TIMEOUT.pvmbg),
@@ -366,7 +368,7 @@ export async function getPvmbg() {
 }
 
 export async function getUsgsStatus() {
-  return cachedFetch('usgs-status', TTL_OBS, async () => {
+  return cachedFetch('usgs-status', TTL_VOLCANO_ALERTS, async () => {
     // Apenas status: resposta rápida usada pela barra superior e classificação do mapa.
     const [monitoredResult, elevatedResult] = await Promise.allSettled([
       fetchJSONWithTimeout('https://volcanoes.usgs.gov/hans-public/api/volcano/getMonitoredVolcanoes', { headers: { 'User-Agent': UA, Accept: 'application/json' } }, SOURCE_TIMEOUT.usgs),

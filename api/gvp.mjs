@@ -2,11 +2,11 @@ const GVP_WFS = 'https://webservices.volcano.si.edu/geoserver/GVP-VOTW/wfs';
 const USER_AGENT = 'GeoGus/1.0 (volcano monitoring; public data client)';
 const cache = globalThis.__geogusGvpCache ??= new Map();
 const inflight = globalThis.__geogusGvpInflight ??= new Map();
-const TTL_ERUPTION = 2 * 60_000;
+const TTL_ERUPTION = 45_000;
 const TTL_CATALOG = 12 * 60 * 60_000;
 const MAX_QUERY_LENGTH = 7000;
 const cacheControlFor = (key) => /ContinuingEruption/i.test(key)
-  ? 's-maxage=60, stale-while-revalidate=120'
+  ? 's-maxage=45, stale-while-revalidate=90'
   : 's-maxage=3600, stale-while-revalidate=21600';
 
 function responseError(res, status, error) {

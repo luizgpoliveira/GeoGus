@@ -73,7 +73,8 @@ export interface Quake {
   lon: number;
   depthKm: number;
   url: string;
-  source: 'USGS' | 'EMSC' | 'USP';
+  /** Primary catalogue that supplied the selected hypocentre/magnitude. */
+  source: string;
   /** Fontes que também registraram o mesmo evento após deduplicação. */
   sources?: string[];
   status: string;
@@ -130,6 +131,11 @@ export interface Settings {
   showQuakes: boolean;
   showVolcanoes: boolean;
   /** Camada independente de estruturas antigas e vulcões do Pleistoceno. */
+  /** Vulcões GVP do Pleistoceno (camada distinta dos Holocenos). */
+  showPleistoceneVolcanoes: boolean;
+  /** Destaque para grandes caldeiras/supererupções documentadas. */
+  showSupervolcanoes: boolean;
+  /** Estruturas geológicas pré-Quaternárias e complexos locais, não catálogo GVP. */
   showHistoricalGeology: boolean;
   quakeAlerts: boolean;
   eruptionAlerts: boolean;

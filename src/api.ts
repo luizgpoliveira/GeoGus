@@ -58,6 +58,27 @@ async function gvpGet(params: Record<string, string>): Promise<any> {
 const gvpQuery = (o: Record<string, string | number>) =>
   gvpGet({ service: 'WFS', version: '2.0.0', request: 'GetFeature', outputFormat: 'application/json', ...o });
 
+/** Busca todas as páginas disponíveis de uma camada GVP, sem assumir que o limite
+ * de uma única resposta será suficiente quando o catálogo mundial crescer. */
+async function gvpQueryAll(o: Record<string, string | number>, pageSize = 2000): Promise<any> {
+  const first = await gvpQuery({ ...o, count: String(pageSize) });
+  const features: any[] = [...(Array.isArray(first.features) ? first.features : [])];
+  const total = Number(first.numberMatched);
+  if (!Number.isFinite(total) || total <= features.length) return { ...first, features };
+
+  const hardLimit = Math.min(total, 20_000);
+  let offset = features.length;
+  while (offset < hardLimit) {
+    const page = await gvpQuery({ ...o, count: String(pageSize), startIndex: String(offset) });
+    const batch = Array.isArray(page.features) ? page.features : [];
+    if (!batch.length) break;
+    features.push(...batch);
+    offset += batch.length;
+    if (batch.length < pageSize) break;
+  }
+  return { ...first, features };
+}
+
 export interface AlertMaps {
   hans: Map<number, AlertInfo>;      // chave = vn (GVP VolcanoNumber)
   phivolcs: Map<string, AlertInfo>;  // chave = nome normalizado
@@ -191,7 +212,7 @@ function saveCatalogCache(key: string, list: Omit<Volcano, 'status'>[]) {
 
 export async function loadVolcanoCatalog(): Promise<Omit<Volcano, 'status'>[]> {
   try {
-    const hol = await gvpQuery({ typeNames: VP_LAY, propertyName: VP_PROPS, count: '2000' });
+    const hol = await gvpQueryAll({ typeNames: VP_LAY, propertyName: VP_PROPS });
     const byVolcanoNumber = new Map<number, Omit<Volcano, 'status'>>();
     for (const f of hol.features ?? []) {
       const v = parseVolcano(f, true);
@@ -212,10 +233,9 @@ export async function loadVolcanoCatalog(): Promise<Omit<Volcano, 'status'>[]> {
 /** Camada Pleistoceno sob demanda; uma falha aqui nunca bloqueia o mapa operacional. */
 export async function loadPleistoceneCatalog(): Promise<Omit<Volcano, 'status'>[]> {
   try {
-    const result = await gvpQuery({
+    const result = await gvpQueryAll({
       typeNames: PLEIST_LAY,
       propertyName: 'Volcano_Number,Volcano_Name,Primary_Volcano_Type,Country,Latitude,Longitude,Elevation',
-      count: '2000',
     });
     const byVolcanoNumber = new Map<number, Omit<Volcano, 'status'>>();
     for (const f of result.features ?? []) {
@@ -224,11 +244,12 @@ export async function loadPleistoceneCatalog(): Promise<Omit<Volcano, 'status'>[
       if (v && Number.isFinite(vn) && vn > 0) byVolcanoNumber.set(vn, v);
     }
     const out = [...byVolcanoNumber.values()];
+    if (!out.length) throw new Error('Catálogo Pleistoceno GVP vazio ou sem coordenadas válidas.');
     saveCatalogCache(PLEISTOCENE_CACHE_KEY, out);
     return out;
   } catch (error) {
     const cached = readCatalogCache(PLEISTOCENE_CACHE_KEY);
-    if (cached) return cached;
+    if (cached?.length) return cached;
     throw error;
   }
 }
@@ -528,11 +549,11 @@ export async function loadQuakes(period: Period, minMag: number): Promise<{ quak
   // Mesmo endpoint no desenvolvimento e no Vercel. Evita CORS e garante que
   // a build de produção tenha a mesma rota/proxy que o vite em npm run dev.
   const params = new URLSearchParams({ period, minMag: String(minMag) });
-  const payload = await fetchJsonT<any>(`/api/earthquakes?${params.toString()}`, 15_000, 'Feed sísmico USGS/EMSC + USP/RSBR');
+  const payload = await fetchJsonT<any>(`/api/earthquakes?${params.toString()}`, 15_000, 'Central sísmica multiorigem · catálogos globais e brasileiros');
   if (!payload?.ok || !Array.isArray(payload.quakes)) {
     throw new Error(payload?.error || 'Nenhum feed sísmico disponível.');
   }
-  const source = String(payload.source || 'USGS/EMSC + USP/RSBR');
+  const source = String(payload.source || 'Catálogos sísmicos integrados');
   const quakes = payload.quakes.filter((q: any) =>
     Number.isFinite(Number(q.lat)) && Number.isFinite(Number(q.lon))
     && Number.isFinite(Number(q.time)) && Number.isFinite(Number(q.mag))
@@ -540,7 +561,7 @@ export async function loadQuakes(period: Period, minMag: number): Promise<{ quak
     ...q,
     id: String(q.id), mag: Number(q.mag), time: Number(q.time), updated: Number(q.updated) || Number(q.time),
     lat: Number(q.lat), lon: Number(q.lon), depthKm: Number(q.depthKm) || 0,
-    source: q.source === 'USP' ? 'USP' : q.source === 'EMSC' ? 'EMSC' : 'USGS',
+    source: String(q.source || 'Catálogo'),
     sources: Array.isArray(q.sources) ? q.sources.map(String) : [String(q.source || source)],
   })) as Quake[];
   const sourceError = payload.error || (Array.isArray(payload.errors) ? payload.errors.join(' · ') : undefined);

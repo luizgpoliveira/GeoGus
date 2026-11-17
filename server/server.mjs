@@ -120,9 +120,9 @@ const server = http.createServer(async (req, res) => {
       return json(await cap(getReports(force), 34_000, 'Central de relatórios'));
     }
     if (url.pathname === '/api/earthquakes') {
-      const period = url.searchParams.get('period') || 'week';
+      const period = url.searchParams.get('period') || 'day';
       const minMag = url.searchParams.get('minMag') || '1';
-      const result = await cap(getEarthquakeFeed(period, minMag), 12_000, 'Feed sísmico USGS/EMSC');
+      const result = await cap(getEarthquakeFeed(period, minMag), 12_000, 'Central sísmica multiorigem');
       res.setHeader('Cache-Control', 'no-store, max-age=0');
       return json(result, result.ok ? 200 : 503);
     }
