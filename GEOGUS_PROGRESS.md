@@ -310,3 +310,41 @@ Este arquivo registra o estado da entrega para permitir retomada em outra sessÃ
 - `/api/health` local: HTTP 200 JSON; rota `/api` desconhecida: HTTP 404 JSON.
 - `npm ci` excedeu o tempo disponível no ambiente e deixou dependências incompletas; build completo e typecheck não foram validados. Executar `npm ci` e `npm run build` localmente antes do deploy.
 - A conectividade externa de todas as fontes não pode ser certificada nesta rodada; healthcheck comprova apenas o backend local.
+
+
+## Correção adicional — Leaflet MapOptions (17/11/2026)
+- Removida a opção `tap: true` em `src/components/MapView.tsx`, pois não pertence ao tipo `MapOptions` da versão do Leaflet utilizada.
+- Mantida `touchZoom: true`; gestos de zoom continuam habilitados.
+- Build tentado com `npm run build`, mas bloqueado por dependências/types incompletos no `node_modules` desta cópia (vários `@types/*` não encontrados). Executar `npm ci` e repetir `npm run build` no ambiente local.
+
+---
+
+## Atualização 2026-11-17 — marcadores do dia, notificações e consistência Vercel
+
+### Alterações
+- Terremotos: o navegador consulta `/api/earthquakes` em mesma origem tanto no `npm run dev` quanto no Vercel. USGS GeoJSON é primário; EMSC FDSN é fallback. Cache curto, deduplicação de requisições simultâneas e cache stale de até 15 minutos em falha de upstream.
+- Rota local `/api/earthquakes` adicionada ao servidor Node de desenvolvimento; função `api/earthquakes.mjs` adicionada para Vercel.
+- Polling sísmico a cada 60 segundos; atualização também ao voltar à aba visível ou recuperar conexão.
+- O mapa pulsa somente terremotos ocorridos na data civil local atual. Clusters pulsam apenas quando contêm ao menos um terremoto de hoje. Magnitude alta, por si só, não aciona pulsação.
+- Vulcões: somente status ERUPCAO confirmado pelo campo `ContinuingEruption` do GVP ou boletim oficial atual podem pulsar; status ATIVO/RECENTE fica estático.
+- Relatórios oficiais usados para erupção atual são limitados ao dia local atual. Notificações de erupção exibem nome/local; terremotos exibem magnitude e local.
+- Polling de erupções e relatórios ajustado para 5 minutos. Novos terremotos aceitam atraso de publicação do USGS de até 25 minutos para detectar eventos já ocorridos, mas somente os eventos de hoje geram alerta.
+- Catálogo Holoceno é carregado primeiro e independentemente dos observatórios e do catálogo histórico. Consultas complementares atualizam classificação depois, sem bloquear marcadores iniciais.
+- Catálogo Pleistoceno é carregado apenas quando a camada histórica é ligada.
+- Cache Edge do GVP: 60s para consulta de erupção contínua; 1h para catálogo, com stale-while-revalidate.
+- Service Worker atualizado para v9; terremotos e tsunami usam fetch de rede sem cache local de navegador.
+- Timeout por tentativa do feed sísmico reduzido para 5,5s, para manter USGS + fallback EMSC dentro do limite da função Vercel.
+
+### Testes realizados
+- Sintaxe TypeScript/TSX: 11 arquivos transpilados, zero erros sintáticos.
+- `node --check`: módulos do servidor, funções Vercel e Service Worker aprovados.
+- `vercel.json`: JSON válido.
+- Teste isolado do serviço de terremotos com USGS GeoJSON simulado: evento convertido corretamente, cache reutilizado e apenas uma chamada externa.
+- Teste do handler `/api/earthquakes` com fetch simulado: HTTP 200, JSON e cabeçalhos de cache corretos.
+- Teste local do backend: `/api/health` respondeu `ok: true`.
+
+### Limitações conhecidas
+- `npm run build` não pôde ser concluído neste ambiente porque `node_modules` está incompleto: `npm ci` não concluiu e faltam definições de tipos como React, Leaflet e GeoJSON. Os erros TS2688 são do ambiente de dependências incompleto; não são resultado do teste sintático dos arquivos.
+- As fontes externas reais não puderam ser consultadas a partir do ambiente de trabalho; a validação de integração live deve ser concluída no deploy/ambiente do usuário.
+- USGS disponibiliza feeds em ciclos de aproximadamente 1 minuto, mas o processamento/publicação pode atrasar alguns minutos; para eventos fora dos EUA, a própria documentação informa média de processamento de aproximadamente 20 minutos. O GeoGus consulta a cada minuto, mas não pode notificar antes da fonte publicar.
+- Alertas contínuos dependem do GeoGus permanecer aberto. Notificações com o site fechado exigem Web Push/VAPID e armazenamento de subscriptions, que não fazem parte desta alteração.

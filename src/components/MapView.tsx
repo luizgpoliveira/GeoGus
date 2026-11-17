@@ -23,6 +23,16 @@ const magColor = (m: number) => (m >= 6 ? '#ff3b30' : m >= 5 ? '#ff9f0a' : m >= 
 const fmtDT = (t: number, locale: string) =>
   new Date(t).toLocaleString(locale, { dateStyle: 'short', timeStyle: 'short' });
 
+/** Verdadeiro apenas para eventos ocorridos no dia civil local do usuário. */
+function isTodayLocal(timestamp: number): boolean {
+  if (!Number.isFinite(timestamp)) return false;
+  const eventDate = new Date(timestamp);
+  const today = new Date();
+  return eventDate.getFullYear() === today.getFullYear()
+    && eventDate.getMonth() === today.getMonth()
+    && eventDate.getDate() === today.getDate();
+}
+
 const VOLCANO_PATH = 'M2 21 L9 7 L11.2 11.5 L12.5 9 L14 12 L15 9.5 L22 21 Z';
 const BOLT_PATH = 'M13.5 2 L4.5 13.5 L10 13.5 L8.5 22 L19.5 10 L13 10 Z';
 
@@ -33,7 +43,8 @@ function volcanoIcon(v: Volcano): L.DivIcon {
   const size = erupting ? 28 : 22;
   return L.divIcon({
     className: 'volc-icon-wrap',
-    html: `<div class="volc-icon ${erupting ? 'erupting' : active ? 'active' : ''}" style="--c:${c};--marker-size:${size}px" role="img" aria-label="${v.name}${erupting ? ' — em erupção' : active ? ' — atividade recente/ativa' : ''}">` +
+    // Somente erupções confirmadas em andamento pulsam. Ativo/recente permanece estático.
+    html: `<div class="volc-icon ${erupting ? 'erupting' : active ? 'recent' : ''}" style="--c:${c};--marker-size:${size}px" role="img" aria-label="${v.name}${erupting ? ' — em erupção' : active ? ' — atividade recente/ativa' : ''}">` +
       `<svg viewBox="0 0 24 24" width="${erupting ? 20 : 16}" height="${erupting ? 20 : 16}" aria-hidden="true">` +
       `<path d="${VOLCANO_PATH}" fill="${c}" stroke="rgba(0,0,0,.72)" stroke-width="1.2" stroke-linejoin="round"/>` +
       (erupting ? '<circle cx="12" cy="6" r="1.7" fill="#fff" opacity=".92"/><circle cx="14.6" cy="3.8" r="1.15" fill="#fff" opacity=".65"/>' : '') +
@@ -49,10 +60,12 @@ function quakeClusterIcon(cluster: any): L.DivIcon {
   const maxMag = children.reduce((max, marker) => Math.max(max, Number((marker.options as any).quakeMag ?? 0)), 0);
   const count = cluster.getChildCount();
   const tone = maxMag >= 6 ? '#ff3b30' : maxMag >= 4.5 ? '#ff9f0a' : '#64d2ff';
+  const hasToday = children.some((marker) => Boolean((marker.options as any).quakeToday));
   const size = count >= 100 ? 44 : count >= 10 ? 38 : 32;
   return L.divIcon({
     className: 'quake-cluster-wrap',
-    html: `<span class="quake-cluster ${maxMag >= 4.5 ? 'quake-cluster-alert' : ''}" style="--cluster-color:${tone};--cluster-size:${size}px">${count}</span>`,
+    // O agrupamento só pulsa se contiver ao menos um tremor ocorrido hoje.
+    html: `<span class="quake-cluster ${hasToday ? 'quake-cluster-live' : ''} ${maxMag >= 4.5 ? 'quake-cluster-highmag' : ''}" style="--cluster-color:${tone};--cluster-size:${size}px">${count}</span>`,
     iconSize: [size, size],
     iconAnchor: [size / 2, size / 2],
   });
@@ -231,9 +244,10 @@ function quakeMarker(q: Quake, onSelect: (q: Quake) => void, alertMag: number, t
   const c = magColor(q.mag);
   const s = Math.round(Math.max(13, Math.min(34, 9 + q.mag * 3.4)));
   const alerted = q.mag >= alertMag;
+  const today = isTodayLocal(q.time);
   const icon = L.divIcon({
     className: 'quake-icon-wrap',
-    html: `<div class="quake-icon pulsing ${alerted ? 'alerted' : ''}" style="--c:${c};--marker-size:${s}px" role="img" aria-label="Terremoto magnitude ${q.mag?.toFixed(1) ?? 'não disponível'}">` +
+    html: `<div class="quake-icon ${today ? 'pulsing-today' : ''} ${alerted ? 'alerted' : ''}" style="--c:${c};--marker-size:${s}px" role="img" aria-label="Terremoto magnitude ${q.mag?.toFixed(1) ?? 'não disponível'}${today ? ', hoje' : ''}">` +
       `<svg viewBox="0 0 24 24" width="${s}" height="${s}" aria-hidden="true">` +
       `<path d="${BOLT_PATH}" fill="${c}" stroke="rgba(0,0,0,.78)" stroke-width="1.1" stroke-linejoin="round"/>` +
       '</svg></div>',
@@ -243,7 +257,8 @@ function quakeMarker(q: Quake, onSelect: (q: Quake) => void, alertMag: number, t
   const m = L.marker([q.lat, q.lon], {
     icon, title: `M ${q.mag?.toFixed(1) ?? '?'}`, riseOnHover: true, zIndexOffset: 650,
   });
-  (m.options as L.MarkerOptions & { quakeMag?: number }).quakeMag = q.mag;
+  (m.options as L.MarkerOptions & { quakeMag?: number; quakeToday?: boolean }).quakeMag = q.mag;
+  (m.options as L.MarkerOptions & { quakeMag?: number; quakeToday?: boolean }).quakeToday = today;
   m.bindPopup(() => quakePopupHtml(q, t, locale), { maxWidth: 300 });
   m.on('click', () => onSelect(q));
   return m;

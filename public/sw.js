@@ -1,7 +1,7 @@
 // Service worker do GeoGus: app-shell cache-first, dados/tiles network-first.
-// v8 atualiza a interface móvel, marcadores pulsantes e melhora a invalidação dos assets.
-const SHELL = 'gg-shell-v8';
-const DATA = 'gg-data-v8';
+// v9: feeds sísmicos em mesma origem e atualização de marcadores por data civil local.
+const SHELL = 'gg-shell-v9';
+const DATA = 'gg-data-v9';
 
 self.addEventListener('message', (event) => {
   if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
@@ -57,8 +57,8 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== 'GET') return;
 
-  // CAP de tsunami contém alertas/cancelamentos operacionais: nunca devolver cache antigo.
-  if (url.origin === self.location.origin && url.pathname === '/api/tsunami') {
+  // Feeds em tempo quase real: não servir dados antigos do cache do navegador.
+  if (url.origin === self.location.origin && (url.pathname === '/api/tsunami' || url.pathname === '/api/earthquakes')) {
     event.respondWith(fetch(event.request, { cache: 'no-store' }));
     return;
   }

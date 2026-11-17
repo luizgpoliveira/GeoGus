@@ -173,29 +173,64 @@ function parseVolcano(f: any, holocene: boolean): Omit<Volcano, 'status'> | null
   };
 }
 
-/** Catálogo completo (Holoceno + Pleistoceno) — chamado 1x, com cache do proxy. */
+/** Catálogo operacional Holoceno — carregado primeiro para não atrasar os marcadores atuais. */
+const VOLCANO_CATALOG_CACHE_KEY = 'tp.gvp.catalog.holocene.v4';
+const PLEISTOCENE_CACHE_KEY = 'tp.gvp.catalog.pleistocene.v2';
+const VOLCANO_CATALOG_CACHE_MAX_AGE = 7 * 24 * 60 * 60_000;
+function readCatalogCache(key: string): Omit<Volcano, 'status'>[] | null {
+  try {
+    const stored = JSON.parse(localStorage.getItem(key) || 'null');
+    if (!stored || !Array.isArray(stored.list) || !Number.isFinite(stored.stamp)) return null;
+    if (Date.now() - stored.stamp > VOLCANO_CATALOG_CACHE_MAX_AGE) return null;
+    return stored.list as Omit<Volcano, 'status'>[];
+  } catch { return null; }
+}
+function saveCatalogCache(key: string, list: Omit<Volcano, 'status'>[]) {
+  try { localStorage.setItem(key, JSON.stringify({ stamp: Date.now(), list })); } catch { /* cache local é opcional */ }
+}
+
 export async function loadVolcanoCatalog(): Promise<Omit<Volcano, 'status'>[]> {
-  const [hol, ple] = await Promise.all([
-    gvpQuery({ typeNames: VP_LAY, propertyName: VP_PROPS, count: '2000' }),
-    gvpQuery({ typeNames: PLEIST_LAY, propertyName: 'Volcano_Number,Volcano_Name,Primary_Volcano_Type,Country,Latitude,Longitude,Elevation', count: '2000' }),
-  ]);
-  // Um mesmo VolcanoNumber pode aparecer em mais de uma camada do serviço.
-  // Mantemos um único registro e damos precedência ao catálogo Holoceno para
-  // impedir que uma linha Pleistocena duplique ou contamine a camada operacional.
-  const byVolcanoNumber = new Map<number, Omit<Volcano, 'status'>>();
-  for (const f of hol.features ?? []) {
-    const v = parseVolcano(f, true);
-    const vn = Number(v?.vn);
-    if (v && Number.isFinite(vn) && vn > 0) byVolcanoNumber.set(vn, v);
+  try {
+    const hol = await gvpQuery({ typeNames: VP_LAY, propertyName: VP_PROPS, count: '2000' });
+    const byVolcanoNumber = new Map<number, Omit<Volcano, 'status'>>();
+    for (const f of hol.features ?? []) {
+      const v = parseVolcano(f, true);
+      const vn = Number(v?.vn);
+      if (v && Number.isFinite(vn) && vn > 0) byVolcanoNumber.set(vn, v);
+    }
+    const out = [...byVolcanoNumber.values()];
+    if (!out.length) throw new Error('Catálogo Holoceno GVP vazio');
+    saveCatalogCache(VOLCANO_CATALOG_CACHE_KEY, out);
+    return out;
+  } catch (error) {
+    const cached = readCatalogCache(VOLCANO_CATALOG_CACHE_KEY);
+    if (cached?.length) return cached;
+    throw error;
   }
-  for (const f of ple.features ?? []) {
-    const v = parseVolcano(f, false);
-    const vn = Number(v?.vn);
-    if (v && Number.isFinite(vn) && vn > 0 && !byVolcanoNumber.has(vn)) byVolcanoNumber.set(vn, v);
+}
+
+/** Camada Pleistoceno sob demanda; uma falha aqui nunca bloqueia o mapa operacional. */
+export async function loadPleistoceneCatalog(): Promise<Omit<Volcano, 'status'>[]> {
+  try {
+    const result = await gvpQuery({
+      typeNames: PLEIST_LAY,
+      propertyName: 'Volcano_Number,Volcano_Name,Primary_Volcano_Type,Country,Latitude,Longitude,Elevation',
+      count: '2000',
+    });
+    const byVolcanoNumber = new Map<number, Omit<Volcano, 'status'>>();
+    for (const f of result.features ?? []) {
+      const v = parseVolcano(f, false);
+      const vn = Number(v?.vn);
+      if (v && Number.isFinite(vn) && vn > 0) byVolcanoNumber.set(vn, v);
+    }
+    const out = [...byVolcanoNumber.values()];
+    saveCatalogCache(PLEISTOCENE_CACHE_KEY, out);
+    return out;
+  } catch (error) {
+    const cached = readCatalogCache(PLEISTOCENE_CACHE_KEY);
+    if (cached) return cached;
+    throw error;
   }
-  const out = [...byVolcanoNumber.values()];
-  if (!out.length) throw new Error('Catálogo GVP vazio ou indisponível');
-  return out;
 }
 
 /** VNs com alguma erupção registrada desde 1960 (usado p/ status ATIVO). */
@@ -490,17 +525,24 @@ export async function loadQuakesEMSC(period: Period, minMag: number): Promise<Qu
 }
 
 export async function loadQuakes(period: Period, minMag: number): Promise<{ quakes: Quake[]; source: 'USGS' | 'EMSC'; error?: string }> {
-  try {
-    return { quakes: await loadQuakesUSGS(period, minMag), source: 'USGS' };
-  } catch (e) {
-    try {
-      const q = await loadQuakesEMSC(period, minMag);
-      if (q.length) return { quakes: q, source: 'EMSC' };
-      return { quakes: [], source: 'EMSC', error: String(e) };
-    } catch (e2) {
-      throw new Error(`USGS e EMSC indisponíveis (${e}; ${e2})`);
-    }
+  // Mesmo endpoint no desenvolvimento e no Vercel. Evita CORS e garante que
+  // a build de produção tenha a mesma rota/proxy que o vite em npm run dev.
+  const params = new URLSearchParams({ period, minMag: String(minMag) });
+  const payload = await fetchJsonT<any>(`/api/earthquakes?${params.toString()}`, 15_000, 'Feed sísmico USGS/EMSC');
+  if (!payload?.ok || !Array.isArray(payload.quakes)) {
+    throw new Error(payload?.error || 'Nenhum feed sísmico disponível.');
   }
+  const source: 'USGS' | 'EMSC' = payload.source === 'EMSC' ? 'EMSC' : 'USGS';
+  const quakes = payload.quakes.filter((q: any) =>
+    Number.isFinite(Number(q.lat)) && Number.isFinite(Number(q.lon))
+    && Number.isFinite(Number(q.time)) && Number.isFinite(Number(q.mag))
+  ).map((q: any) => ({
+    ...q,
+    id: String(q.id), mag: Number(q.mag), time: Number(q.time), updated: Number(q.updated) || Number(q.time),
+    lat: Number(q.lat), lon: Number(q.lon), depthKm: Number(q.depthKm) || 0,
+    source: q.source === 'EMSC' ? 'EMSC' : source,
+  })) as Quake[];
+  return { quakes, source, error: payload.error };
 }
 
 /** Alertas CAP oficiais dos centros NOAA PTWC e NTWC via backend local/Vercel. */

@@ -2,9 +2,12 @@ const GVP_WFS = 'https://webservices.volcano.si.edu/geoserver/GVP-VOTW/wfs';
 const USER_AGENT = 'GeoGus/1.0 (volcano monitoring; public data client)';
 const cache = globalThis.__geogusGvpCache ??= new Map();
 const inflight = globalThis.__geogusGvpInflight ??= new Map();
-const TTL_ERUPTION = 10 * 60_000;
+const TTL_ERUPTION = 2 * 60_000;
 const TTL_CATALOG = 12 * 60 * 60_000;
 const MAX_QUERY_LENGTH = 7000;
+const cacheControlFor = (key) => /ContinuingEruption/i.test(key)
+  ? 's-maxage=60, stale-while-revalidate=120'
+  : 's-maxage=3600, stale-while-revalidate=21600';
 
 function responseError(res, status, error) {
   res.setHeader('Cache-Control', 'no-store');
@@ -37,7 +40,7 @@ export default async function handler(req, res) {
   const hit = cache.get(key);
   const ttl = /ContinuingEruption/i.test(key) ? TTL_ERUPTION : TTL_CATALOG;
   if (hit && Date.now() - hit.savedAt < ttl) {
-    res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=300');
+    res.setHeader('Cache-Control', cacheControlFor(key));
     res.setHeader('X-GeoGus-Cache', 'HIT');
     return res.status(200).send(hit.body);
   }
@@ -80,13 +83,13 @@ export default async function handler(req, res) {
   try {
     const result = await pending;
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=300');
+    res.setHeader('Cache-Control', cacheControlFor(key));
     res.setHeader('X-GeoGus-Cache', hit ? 'REVALIDATED' : 'MISS');
     return res.status(200).send(result.body);
   } catch (error) {
     if (hit?.body) {
       res.setHeader('Content-Type', 'application/json; charset=utf-8');
-      res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=300');
+      res.setHeader('Cache-Control', cacheControlFor(key));
       res.setHeader('X-GeoGus-Cache', 'STALE');
       res.setHeader('X-GeoGus-Upstream-Error', String(error?.message || error).slice(0, 160));
       return res.status(200).send(hit.body);

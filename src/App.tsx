@@ -7,7 +7,7 @@ import { HISTORICAL_GEOLOGY } from './historicalGeology';
 import { VolcanoDetails, QuakeDetails } from './components/Details';
 import type { NotifEntry, Quake, ReportsPayload, Settings, SourceInfo, TsunamiAlert, Volcano } from './types';
 import {
-  classifyVolcano, loadActiveSince1960, loadOngoingEruptions, loadRecentEruptions, loadQuakes, loadVolcanoCatalog, countryPolygon,
+  classifyVolcano, loadActiveSince1960, loadOngoingEruptions, loadRecentEruptions, loadQuakes, loadVolcanoCatalog, loadPleistoceneCatalog, countryPolygon,
   loadHansStatus, loadPhivolcsStatus, loadPvmbgStatus, loadReports, loadTsunamiAlerts, activityByVolcano,
   type AlertMaps,
 } from './api';
@@ -15,9 +15,19 @@ import { I18nContext, LANGS, LOCALE_TAG, makeT, useI18n, type Lang } from './i18
 
 // O feed GeoJSON 7d do USGS é atualizado a cada minuto; alinhar o polling ao ciclo oficial.
 const POLL_QUAKES = 60_000;
-const POLL_ERUP = 15 * 60_000;
-const POLL_REPORTS = 10 * 60_000;
+const POLL_ERUP = 5 * 60_000;
+const POLL_REPORTS = 5 * 60_000;
 const POLL_TSUNAMI = 60_000;
+
+/** Dia civil local: só eventos de hoje são tratados como atividade visual do dia. */
+function isTodayLocal(timestamp: number): boolean {
+  if (!Number.isFinite(timestamp)) return false;
+  const eventDate = new Date(timestamp);
+  const today = new Date();
+  return eventDate.getFullYear() === today.getFullYear()
+    && eventDate.getMonth() === today.getMonth()
+    && eventDate.getDate() === today.getDate();
+}
 
 const DEFAULT_SETTINGS: Settings = {
   minMag: 1.0, alertMag: 2.5, period: 'week', country: '', volcanoFilter: 'erupting',
@@ -150,6 +160,8 @@ function Shell() {
   const activityRef = useRef<Map<number, string[]>>(new Map());
   const volcanoesRef = useRef(volcanoes);
   volcanoesRef.current = volcanoes;
+  const [pleistoceneLoaded, setPleistoceneLoaded] = useState(false);
+  const pleistoceneLoading = useRef(false);
 
   const withActivity = useCallback((list: Volcano[]) =>
     list.map((v) => (activityRef.current.has(v.vn) ? { ...v, activity: activityRef.current.get(v.vn) } : v)), []);
@@ -216,6 +228,9 @@ function Shell() {
       }
     }
     eruptingRef.current = eruptingNow;
+    // Se o carregamento inicial do endpoint de erupções falhou, a primeira
+    // resposta recuperada estabelece baseline sem gerar alertas retroativos.
+    if (!baseline.current.eruptions) baseline.current.eruptions = true;
     ongoingRef.current = ongoing;
     ongoingRef2.current = erup.ongoing;
     setVolcanoes(list);
@@ -225,36 +240,96 @@ function Shell() {
   useEffect(() => {
     let alive = true;
     (async () => {
+      // 1) O mapa operacional recebe o catálogo Holoceno assim que ele chega.
+      // A disponibilidade de uma camada histórica ou de um endpoint auxiliar
+      // não pode impedir que terremotos/vulcões apareçam na build do Vercel.
+      let cat: Awaited<ReturnType<typeof loadVolcanoCatalog>>;
       try {
-        const [cat, erup, active, recent, obs] = await Promise.all([
-          loadVolcanoCatalog(), loadOngoingEruptions(), loadActiveSince1960(), loadRecentEruptions(90),
-          Promise.allSettled([loadHansStatus(), loadPhivolcsStatus(), loadPvmbgStatus()]),
-        ]);
+        cat = await loadVolcanoCatalog();
         if (!alive) return;
-        const [hansR, phivR, pvmbgR] = obs;
+        const initial = cat.map((v) => classifyVolcano(v, new Set(), new Set(), new Set(), undefined));
+        setVolcanoes(withActivity(initial));
+        setVolcanoInfo({ id: 'gvp', label: 'Smithsonian GVP', ok: true, updated: Date.now() });
+      } catch (error) {
+        if (!alive) return;
+        setVolcanoInfo({ id: 'gvp', label: 'Smithsonian GVP', ok: false, updated: null, error: String(error) });
+        // Os feeds sísmicos continuam independentes e podem alimentar o mapa.
+        return;
+      }
+
+      // 2) Dispara as consultas auxiliares independentemente. A resposta de
+      // erupções atualiza o mapa assim que chega; não espera USGS/PHIVOLCS/PVMBG
+      // nem o catálogo histórico terminarem (evita build Vercel sem marcadores).
+      const publishClassification = () => {
+        if (!alive) return;
+        const current = new Set([...ongoingRef.current, ...reportedCurrentEruptionsRef.current]);
+        const list = withActivity(cat.map((v) => classifyVolcano(v, current, activeRef.current, recentRef.current, alertsRef.current)));
+        eruptingRef.current = new Set(list.filter((v) => v.holocene && v.status === 'ERUPCAO').map((v) => v.vn));
+        setVolcanoes(list);
+      };
+
+      const eruptionTask = loadOngoingEruptions().then((erup) => {
+        if (!alive) return;
         ongoingRef.current = new Set(erup.ongoing.keys());
         ongoingRef2.current = erup.ongoing;
-        recentRef.current = recent;
-        activeRef.current = active;
+        baseline.current.eruptions = true;
+        publishClassification();
+      }).catch(() => {
+        // O primeiro refresh bem-sucedido estabelece a linha de base sem alerta retroativo.
+        baseline.current.eruptions = false;
+      });
+
+      const activeTask = loadActiveSince1960().then((value) => {
+        if (!alive) return;
+        activeRef.current = value;
+        publishClassification();
+      }).catch(() => {});
+
+      const recentTask = loadRecentEruptions(90).then((value) => {
+        if (!alive) return;
+        recentRef.current = value;
+        publishClassification();
+      }).catch(() => {});
+
+      const observatoryTasks = Promise.allSettled([loadHansStatus(), loadPhivolcsStatus(), loadPvmbgStatus()]).then((results) => {
+        if (!alive) return;
+        const [hansR, phivR, pvmbgR] = results;
         alertsRef.current = {
           hans: hansR.status === 'fulfilled' ? hansR.value : new Map(),
           phivolcs: phivR.status === 'fulfilled' ? phivR.value : new Map(),
           pvmbg: pvmbgR.status === 'fulfilled' ? pvmbgR.value : new Map(),
         } as AlertMaps;
-        setObsInfo({ phivolcs: srcInfo('phivolcs', 'PHIVOLCS', phivR), pvmbg: srcInfo('pvmbg', 'PVMBG', pvmbgR), usgs: srcInfo('usgs', 'USGS HANS', hansR) });
-        const initialCurrent = new Set([...erup.ongoing.keys(), ...reportedCurrentEruptionsRef.current]);
-        const list = withActivity(cat.map((v) => classifyVolcano(v, initialCurrent, active, recent, alertsRef.current)));
-        eruptingRef.current = new Set(list.filter((v) => v.holocene && v.status === 'ERUPCAO').map((v) => v.vn));
-        setVolcanoes(list);
-        setVolcanoInfo({ id: 'gvp', label: 'Smithsonian GVP', ok: true, updated: Date.now() });
-        baseline.current.eruptions = true;
-      } catch (e) {
-        if (!alive) return;
-        setVolcanoInfo({ id: 'gvp', label: 'Smithsonian GVP', ok: false, updated: null, error: String(e) });
-      }
+        setObsInfo({
+          phivolcs: srcInfo('phivolcs', 'PHIVOLCS', phivR),
+          pvmbg: srcInfo('pvmbg', 'PVMBG', pvmbgR),
+          usgs: srcInfo('usgs', 'USGS HANS', hansR),
+        });
+        publishClassification();
+      });
+
+      await Promise.allSettled([eruptionTask, activeTask, recentTask, observatoryTasks]);
     })();
     return () => { alive = false; };
   }, []);
+
+  // O catálogo Pleistoceno é uma camada histórica opcional. Só é consultado
+  // quando o usuário ativa a flag, para não atrasar o mapa e os marcadores atuais.
+  useEffect(() => {
+    if (!settings.showHistoricalGeology || pleistoceneLoaded || pleistoceneLoading.current) return;
+    pleistoceneLoading.current = true;
+    loadPleistoceneCatalog()
+      .then((historical) => {
+        setVolcanoes((previous) => {
+          const ids = new Set(previous.map((v) => Number(v.vn)));
+          return [...previous, ...historical.filter((v) => !ids.has(Number(v.vn))).map((v) => ({ ...v, status: 'EXTINTO' as const }))];
+        });
+        setPleistoceneLoaded(true);
+      })
+      .catch((error) => {
+        console.warn('[GeoGus] Catálogo Pleistoceno indisponível; estruturas geológicas locais continuam disponíveis.', error);
+      })
+      .finally(() => { pleistoceneLoading.current = false; });
+  }, [settings.showHistoricalGeology, pleistoceneLoaded]);
 
   /* ---------- Terremotos (inicial + polling) ---------- */
   const fetchQuakes = useCallback(async (first = false) => {
@@ -275,7 +350,7 @@ function Shell() {
           // Usamos também a data de atualização do registro, mas só para IDs ainda não vistos.
           const observedAt = Math.max(Number(k.time) || 0, Number(k.updated) || 0);
           const arrivedSinceLastCheck = previousCheck > 0 && observedAt >= previousCheck - 25 * 60_000 && k.time <= now + 60_000;
-          if (arrivedSinceLastCheck && k.mag >= settingsRef.current.alertMag && settingsRef.current.quakeAlerts) {
+          if (arrivedSinceLastCheck && isTodayLocal(k.time) && k.mag >= settingsRef.current.alertMag && settingsRef.current.quakeAlerts) {
             pushNotif({
               key: `q:${k.id}`, kind: 'quake',
               title: t('nt.q.title', { mag: k.mag.toFixed(1), place: k.place }),
@@ -302,8 +377,17 @@ function Shell() {
   // silenciar um terremoto novo que chegou enquanto o usuário ajustava as opções.
   useEffect(() => { fetchQuakes(!baseline.current.quakes); }, [settings.period, settings.minMag, settings.showQuakes]);
   useEffect(() => {
-    const tm = setInterval(() => fetchQuakes(false), POLL_QUAKES);
-    return () => clearInterval(tm);
+    const tm = window.setInterval(() => { void fetchQuakes(false); }, POLL_QUAKES);
+    const refreshWhenAvailable = () => {
+      if (document.visibilityState === 'visible' && navigator.onLine) void fetchQuakes(false);
+    };
+    document.addEventListener('visibilitychange', refreshWhenAvailable);
+    window.addEventListener('online', refreshWhenAvailable);
+    return () => {
+      clearInterval(tm);
+      document.removeEventListener('visibilitychange', refreshWhenAvailable);
+      window.removeEventListener('online', refreshWhenAvailable);
+    };
   }, [fetchQuakes]);
 
   /* ---------- Alertas de tsunami: CAP oficial NOAA PTWC/NTWC ---------- */
@@ -354,11 +438,20 @@ function Shell() {
     return () => { clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); window.removeEventListener('online', onVisible); };
   }, [fetchTsunami]);
 
-  /* ---------- Ciclos: erupções (15 min) + reparo de observatórios (5 min enquanto incompleto) ---------- */
+  /* ---------- Ciclos: verificação de erupções a cada 5 min + recuperação de observatórios ---------- */
   useEffect(() => {
     if (!volcanoInfo.ok) return;
-    const tm = setInterval(() => refreshEruptions(true), POLL_ERUP);
-    return () => clearInterval(tm);
+    const tm = window.setInterval(() => { void refreshEruptions(true); }, POLL_ERUP);
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible' && navigator.onLine) void refreshEruptions(true);
+    };
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    window.addEventListener('online', refreshWhenVisible);
+    return () => {
+      clearInterval(tm);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
+      window.removeEventListener('online', refreshWhenVisible);
+    };
   }, [volcanoInfo.ok, refreshEruptions]);
 
   useEffect(() => {
@@ -373,7 +466,7 @@ function Shell() {
     return () => { clearInterval(tm); window.removeEventListener('online', onOnline); };
   }, [volcanoInfo.ok, refreshEruptions]);
 
-  /* ---------- Central de Inteligência: relatórios + notícias (10 min) ---------- */
+  /* ---------- Central de Inteligência: relatórios + notícias (5 min) ---------- */
   useEffect(() => {
     if (!volcanoInfo.ok) return;
     let alive = true;
@@ -390,10 +483,11 @@ function Shell() {
         .finally(() => { loading = false; });
     };
     load();
-    const tm = setInterval(load, POLL_REPORTS);
-    const onOnline = () => load();
-    window.addEventListener('online', onOnline);
-    return () => { alive = false; clearInterval(tm); window.removeEventListener('online', onOnline); };
+    const tm = window.setInterval(load, POLL_REPORTS);
+    const onAvailable = () => { if (document.visibilityState === 'visible') load(); };
+    document.addEventListener('visibilitychange', onAvailable);
+    window.addEventListener('online', onAvailable);
+    return () => { alive = false; clearInterval(tm); document.removeEventListener('visibilitychange', onAvailable); window.removeEventListener('online', onAvailable); };
   }, [volcanoInfo.ok]);
 
   // Tags e confirmação de erupções em andamento: somente relatório oficial,
@@ -408,8 +502,7 @@ function Shell() {
         && item.volcanoVn != null && item.volcanoVn > 0
         && item.cats.includes('ERUPCAO')
         && item.ts <= now + 60 * 60_000
-        && now - item.ts >= -60 * 60_000
-        && now - item.ts <= 48 * 60 * 60_000)
+        && isTodayLocal(item.ts))
       .map((item) => Number(item.volcanoVn)));
     const updated = classifyAll(ongoingRef.current, alertsRef.current);
     const nextErupting = new Set(updated.filter((v) => v.holocene && v.status === 'ERUPCAO').map((v) => v.vn));
@@ -425,8 +518,8 @@ function Shell() {
         const episodeDate = episode?.start || (supportingReport ? new Date(supportingReport.ts).toISOString().slice(0, 10) : new Date(now).toISOString().slice(0, 10));
         pushNotif({
           key: `e:${vn}:${episodeDate}`, kind: 'eruption',
-          title: t('nt.e.new', { name: volcano.name }),
-          body: t('nt.e.newBody', { country: volcano.country }),
+          title: `🌋 Erupção confirmada: ${volcano.name}`,
+          body: `Local: ${volcano.country}`,
           time: supportingReport?.ts || now,
           url: `https://volcano.si.edu/volcano.cfm?vn=${vn}`,
         }, settingsRef.current.browserNotifs);

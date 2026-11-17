@@ -109,25 +109,24 @@ h2 { font-size: 17px; } h3 { font-size: 13px; text-transform: uppercase; letter-
 .volc-icon, .quake-icon { position: relative; width: var(--marker-size, 24px); height: var(--marker-size, 24px); display: flex; align-items: center; justify-content: center; isolation: isolate; overflow: visible; }
 .volc-icon svg, .quake-icon svg { position: relative; z-index: 2; display: block; filter: drop-shadow(0 1px 3px rgba(0,0,0,.9)); }
 .volc-icon.erupting::before, .volc-icon.erupting::after,
-.volc-icon.active::before, .volc-icon.active::after,
-.quake-icon.pulsing::before, .quake-icon.pulsing::after {
+.quake-icon.pulsing-today::before, .quake-icon.pulsing-today::after {
   content: ''; position: absolute; inset: -3px; border: 2px solid var(--c); border-radius: 50%;
   opacity: 0; pointer-events: none; z-index: 1; animation: geoMarkerRipple 2.4s ease-out infinite;
 }
-.volc-icon.erupting::after, .quake-icon.pulsing::after { animation-delay: 1.2s; }
+.volc-icon.erupting::after, .quake-icon.pulsing-today::after { animation-delay: 1.2s; }
 .volc-icon.erupting::before, .volc-icon.erupting::after { animation-duration: 1.8s; border-width: 2px; }
-.volc-icon.active::before, .volc-icon.active::after { animation-duration: 3.2s; border-width: 1.5px; opacity: .42; }
-.volc-icon.active::after { animation-delay: 1.6s; }
+.volc-icon.recent { opacity: .9; }
 .quake-icon.alerted::before, .quake-icon.alerted::after { animation-duration: 1.25s; border-width: 2.5px; }
 .quake-icon.alerted svg { filter: drop-shadow(0 0 5px rgba(255,59,48,.95)); }
 
 /* Clusters sísmicos permanecem visíveis no zoom mundial e informam o volume agrupado. */
 .quake-cluster-wrap { background: transparent; border: 0; display: flex; align-items: center; justify-content: center; }
 .quake-cluster { position: relative; width: var(--cluster-size); height: var(--cluster-size); display: flex; align-items: center; justify-content: center; border: 2px solid var(--cluster-color); border-radius: 50%; color: #fff; background: rgba(17,24,39,.96); font-size: 11px; font-weight: 800; box-shadow: 0 2px 8px rgba(0,0,0,.6), 0 0 0 4px rgba(100,210,255,.16); }
-.quake-cluster-alert { animation: clusterGlow 1.8s ease-in-out infinite; }
+.quake-cluster-live { animation: clusterGlow 1.8s ease-in-out infinite; }
+.quake-cluster-highmag { border-color: #ff9f0a; box-shadow: 0 2px 8px rgba(0,0,0,.6), 0 0 0 3px rgba(255,159,10,.18); }
 @keyframes geoMarkerRipple { 0% { transform: scale(.55); opacity: .78; } 75%, 100% { transform: scale(2.25); opacity: 0; } }
 @keyframes clusterGlow { 0%,100% { box-shadow: 0 2px 8px rgba(0,0,0,.6), 0 0 0 3px rgba(255,59,48,.14); } 50% { box-shadow: 0 2px 12px rgba(0,0,0,.7), 0 0 0 8px rgba(255,59,48,.24); } }
-@media (prefers-reduced-motion: reduce) { .volc-icon.erupting::before, .volc-icon.erupting::after, .volc-icon.active::before, .volc-icon.active::after, .quake-icon.pulsing::before, .quake-icon.pulsing::after, .quake-cluster-alert { animation: none !important; opacity: .55; } }
+@media (prefers-reduced-motion: reduce) { .volc-icon.erupting::before, .volc-icon.erupting::after, .quake-icon.pulsing-today::before, .quake-icon.pulsing-today::after, .quake-cluster-live { animation: none !important; opacity: .55; } }
 
 /* chip "em erupÃ§Ã£o" clicÃ¡vel */
 .chip.stat.erupting { cursor: pointer; font-family: inherit; background: transparent; appearance: none; }

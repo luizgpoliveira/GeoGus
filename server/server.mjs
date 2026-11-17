@@ -7,6 +7,7 @@ import { extname, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getPhivolcs, getPvmbg, getUsgs, getUsgsStatus, getReports } from './reports.mjs';
 import { getTsunamiAlerts } from './tsunami.mjs';
+import { getEarthquakeFeed } from './earthquakes.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DIST = join(__dirname, '..', 'dist');
@@ -16,7 +17,7 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 
 const cache = new Map(); // q -> { t, status, ct, body }
 const proxyInflight = new Map(); // evita consultas WFS idênticas em paralelo
-const TTL_ERUP = 10 * 60_000;   // erupções em curso: 10 min
+const TTL_ERUP = 2 * 60_000;   // erupções em curso: 10 min
 const TTL_LOCAL = 6 * 3600e3;   // detalhes por vulcão: 6 h
 const TTL_CAT = 12 * 3600e3;    // catálogos completos: 12 h
 
@@ -117,6 +118,13 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/reports') {
       const force = url.searchParams.get('force') === '1';
       return json(await cap(getReports(force), 34_000, 'Central de relatórios'));
+    }
+    if (url.pathname === '/api/earthquakes') {
+      const period = url.searchParams.get('period') || 'week';
+      const minMag = url.searchParams.get('minMag') || '1';
+      const result = await cap(getEarthquakeFeed(period, minMag), 12_000, 'Feed sísmico USGS/EMSC');
+      res.setHeader('Cache-Control', 'no-store, max-age=0');
+      return json(result, result.ok ? 200 : 503);
     }
     if (url.pathname === '/api/tsunami') {
       const force = url.searchParams.get('force') === '1';
