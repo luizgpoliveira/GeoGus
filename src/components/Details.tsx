@@ -157,7 +157,8 @@ export function QuakeDetails({ q, onClose }: { q: Quake; onClose: () => void }) 
           <div><span>{t('pp.depth')}</span><b>{q.depthKm.toFixed(1)} km</b></div>
           <div><span>{t('pp.dateTime')}</span><b>{fmtDT(q.time, locale)}</b></div>
           <div><span>{t('pp.coords')}</span><b>{q.lat.toFixed(3)}, {q.lon.toFixed(3)}</b></div>
-          <div><span>{t('pp.source')}</span><b>{q.source}{q.status ? ` · ${q.status}` : ''}</b></div>
+          <div><span>{t('pp.source')}</span><b>{q.source === 'USP' ? 'Centro de Sismologia USP / RSBR' : q.source}{q.status ? ` · ${q.status}` : ''}</b></div>
+          {q.sources && q.sources.length > 1 && <div><span>Fontes correlacionadas</span><b>{q.sources.join(' · ')}</b></div>}
           {q.felt != null && <div><span>{t('pp.feltBy')}</span><b>{q.felt}</b></div>}
         </div>
         {q.url && <p><a href={q.url} target="_blank" rel="noreferrer">{t('pp.viewAt')} {q.source} ↗</a></p>}

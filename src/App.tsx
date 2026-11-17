@@ -336,9 +336,9 @@ function Shell() {
     if (quakeFetchRunning.current) return;
     quakeFetchRunning.current = true;
     try {
-      const { quakes: q, source } = await loadQuakes(settingsRef.current.period, Math.min(settingsRef.current.minMag, settingsRef.current.alertMag));
+      const { quakes: q, source, error: sourceError } = await loadQuakes(settingsRef.current.period, Math.min(settingsRef.current.minMag, settingsRef.current.alertMag));
       setQuakes(q);
-      setQuakeInfo({ id: 'quakes', label: `Terremotos (${source})`, ok: true, updated: Date.now() });
+      setQuakeInfo({ id: 'quakes', label: `Terremotos (${source})`, ok: true, updated: Date.now(), error: sourceError });
       const now = Date.now();
       const previousCheck = lastQuakeCheck.current;
       const fresh = q.filter((k) => !seenQuakes.current.has(k.id));

@@ -73,7 +73,9 @@ export interface Quake {
   lon: number;
   depthKm: number;
   url: string;
-  source: 'USGS' | 'EMSC';
+  source: 'USGS' | 'EMSC' | 'USP';
+  /** Fontes que também registraram o mesmo evento após deduplicação. */
+  sources?: string[];
   status: string;
   alert: string | null;
   felt: number | null;

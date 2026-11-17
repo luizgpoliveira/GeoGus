@@ -348,3 +348,14 @@ Este arquivo registra o estado da entrega para permitir retomada em outra sessÃ
 - As fontes externas reais não puderam ser consultadas a partir do ambiente de trabalho; a validação de integração live deve ser concluída no deploy/ambiente do usuário.
 - USGS disponibiliza feeds em ciclos de aproximadamente 1 minuto, mas o processamento/publicação pode atrasar alguns minutos; para eventos fora dos EUA, a própria documentação informa média de processamento de aproximadamente 20 minutos. O GeoGus consulta a cada minuto, mas não pode notificar antes da fonte publicar.
 - Alertas contínuos dependem do GeoGus permanecer aberto. Notificações com o site fechado exigem Web Push/VAPID e armazenamento de subscriptions, que não fazem parte desta alteração.
+
+## Integração de sismicidade brasileira (17/11/2026)
+- Adicionado consumo do FDSN Event do Centro de Sismologia USP para a região brasileira (QuakeML/XML, limites geográficos e magnitude/período configuráveis).
+- Eventos USP/RSBR são combinados com USGS; EMSC continua como fallback global quando o USGS falhar.
+- Deduplicação espaço-temporal entre registros USP e globais, preservando proveniência de cada agência.
+- Detalhes do evento informam se a solução USP é manual/revisada ou automática/preliminar.
+- O status da faixa sísmica identifica `USGS + USP / RSBR` e expõe erros parciais.
+- Incluído `BRASIL_SISMICO.md` com endpoints, limitações e distinção entre catálogo dinâmico e Boletim Sísmico Brasileiro estático.
+- Incluído `npm run test:brasil` para validar parsing QuakeML e deduplicação sem depender da rede.
+- Testes: parser QuakeML e merge sintético aprovados; 11 arquivos TS/TSX passaram por transpilation syntax check; módulos Node passaram em `node --check`.
+- Build completo ainda não validado: `npm ci` não concluiu dentro do ambiente disponível; `npm run build` encontrou @types incompletos na instalação interrompida.

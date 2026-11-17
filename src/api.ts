@@ -524,15 +524,15 @@ export async function loadQuakesEMSC(period: Period, minMag: number): Promise<Qu
   });
 }
 
-export async function loadQuakes(period: Period, minMag: number): Promise<{ quakes: Quake[]; source: 'USGS' | 'EMSC'; error?: string }> {
+export async function loadQuakes(period: Period, minMag: number): Promise<{ quakes: Quake[]; source: string; error?: string }> {
   // Mesmo endpoint no desenvolvimento e no Vercel. Evita CORS e garante que
   // a build de produção tenha a mesma rota/proxy que o vite em npm run dev.
   const params = new URLSearchParams({ period, minMag: String(minMag) });
-  const payload = await fetchJsonT<any>(`/api/earthquakes?${params.toString()}`, 15_000, 'Feed sísmico USGS/EMSC');
+  const payload = await fetchJsonT<any>(`/api/earthquakes?${params.toString()}`, 15_000, 'Feed sísmico USGS/EMSC + USP/RSBR');
   if (!payload?.ok || !Array.isArray(payload.quakes)) {
     throw new Error(payload?.error || 'Nenhum feed sísmico disponível.');
   }
-  const source: 'USGS' | 'EMSC' = payload.source === 'EMSC' ? 'EMSC' : 'USGS';
+  const source = String(payload.source || 'USGS/EMSC + USP/RSBR');
   const quakes = payload.quakes.filter((q: any) =>
     Number.isFinite(Number(q.lat)) && Number.isFinite(Number(q.lon))
     && Number.isFinite(Number(q.time)) && Number.isFinite(Number(q.mag))
@@ -540,9 +540,11 @@ export async function loadQuakes(period: Period, minMag: number): Promise<{ quak
     ...q,
     id: String(q.id), mag: Number(q.mag), time: Number(q.time), updated: Number(q.updated) || Number(q.time),
     lat: Number(q.lat), lon: Number(q.lon), depthKm: Number(q.depthKm) || 0,
-    source: q.source === 'EMSC' ? 'EMSC' : source,
+    source: q.source === 'USP' ? 'USP' : q.source === 'EMSC' ? 'EMSC' : 'USGS',
+    sources: Array.isArray(q.sources) ? q.sources.map(String) : [String(q.source || source)],
   })) as Quake[];
-  return { quakes, source, error: payload.error };
+  const sourceError = payload.error || (Array.isArray(payload.errors) ? payload.errors.join(' · ') : undefined);
+  return { quakes, source, error: sourceError };
 }
 
 /** Alertas CAP oficiais dos centros NOAA PTWC e NTWC via backend local/Vercel. */
