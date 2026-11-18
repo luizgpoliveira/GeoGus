@@ -9,6 +9,23 @@ export interface AlertInfo {
   details?: string;       // resumo do boletim (sismicidade, SO₂, pluma)
 }
 
+export type VolcanoRiskLevel = 'GREEN' | 'YELLOW' | 'ORANGE' | 'RED';
+
+export interface VolcanoRiskAssessment {
+  level: VolcanoRiskLevel;
+  rank: 0 | 1 | 2 | 3;
+  label: string;
+  color: string;
+  pulse: boolean;
+  reasons: string[];
+  sources: string[];
+  seismic24h: number;
+  seismicPrevious6d: number;
+  seismicRadiusKm: number;
+  confidence: 'ALTA' | 'MODERADA' | 'LIMITADA';
+  updatedAt: number;
+}
+
 export interface Volcano {
   vn: number; // VolcanoNumber GVP
   name: string;
@@ -22,6 +39,10 @@ export interface Volcano {
   holocene: boolean; // pertence ao catálogo Holoceno (senão = Pleistoceno)
   remarks?: string;
   alertInfo?: AlertInfo;
+  /** Todos os alertas de observatório associados ao vulcão (podem coexistir). */
+  alertInfos?: AlertInfo[];
+  /** Nível operacional calculado com alertas, boletins oficiais e sismicidade próxima. */
+  risk?: VolcanoRiskAssessment;
   /** Tipos de atividade identificados nos relatórios recentes (48 h). */
   activity?: string[];
   pop?: { p5?: number | null; p10?: number | null; p30?: number | null; p100?: number | null };
@@ -127,7 +148,7 @@ export interface Settings {
   alertMag: number; // magnitude mínima para gerar alerta/notificação
   period: Period;
   country: string; // filtro de país (vulcões/terremotos)
-  volcanoFilter: 'all' | 'active' | 'inactive' | 'erupting';
+  volcanoFilter: 'all' | 'active' | 'inactive' | 'erupting'; // 'erupting' é o filtro amplo de atividade vulcânica
   showQuakes: boolean;
   showVolcanoes: boolean;
   /** Camada independente de estruturas antigas e vulcões do Pleistoceno. */

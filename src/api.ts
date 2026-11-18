@@ -114,7 +114,7 @@ export function classifyVolcano(
   // Defesa de domínio: entradas do catálogo Pleistoceno são históricas e
   // nunca podem ser promovidas a erupção atual por colisão de VN, relatório
   // legado ou associação de alertas de observatórios.
-  if (!v.holocene) return { ...v, status: 'EXTINTO', alertInfo: undefined };
+  if (!v.holocene) return { ...v, status: 'EXTINTO', alertInfo: undefined, alertInfos: undefined };
 
   const obs: AlertInfo[] = [];
   const hans = alerts?.hans.get(v.vn);
@@ -136,7 +136,7 @@ export function classifyVolcano(
   else if (!v.holocene) status = 'EXTINTO';
   else if (activeVNs.has(v.vn) || (v.lastEruption != null && v.lastEruption >= new Date().getFullYear() - 50)) status = 'ATIVO';
   else status = 'DORMENTE';
-  return { ...v, status, alertInfo };
+  return { ...v, status, alertInfo, alertInfos: obs };
 }
 
 const num = (x: any) => (x == null ? null : Number(x));
@@ -325,6 +325,9 @@ export function activityByVolcano(items: ReportItem[]): Map<number, string[]> {
   const m = new Map<number, string[]>();
   for (const it of items) {
     if (!it.volcanoVn || Date.now() - it.ts > 48 * 3600_000) continue;
+    // Notícias isoladas/reportadas não viram um sinal operacional só por terem
+    // uma tag; entram na avaliação do risco após validação por fontes independentes.
+    if (it.verified === 'NAO_CONFIRMADO' || (it.kind === 'NOTICIA' && it.verified !== 'CONFIRMADO')) continue;
     const set = new Set(m.get(it.volcanoVn) ?? []);
     for (const c of it.cats) set.add(c);
     if (it.ashKm) set.add('CINZAS');

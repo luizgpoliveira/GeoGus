@@ -6,7 +6,8 @@ import Intel, { UpdatesList } from './components/Intel';
 import { HISTORICAL_GEOLOGY } from './historicalGeology';
 import { SUPER_VOLCANO_IDS } from './supervolcanoes';
 import { VolcanoDetails, QuakeDetails } from './components/Details';
-import type { NotifEntry, Quake, ReportsPayload, Settings, SourceInfo, TsunamiAlert, Volcano } from './types';
+import type { NotifEntry, Quake, ReportItem, ReportsPayload, Settings, SourceInfo, TsunamiAlert, Volcano } from './types';
+import { assessVolcanoRisk } from './volcanoRisk';
 import {
   classifyVolcano, loadActiveSince1960, loadOngoingEruptions, loadRecentEruptions, loadQuakes, loadVolcanoCatalog, loadPleistoceneCatalog, countryPolygon,
   loadHansStatus, loadPhivolcsStatus, loadPvmbgStatus, loadReports, loadTsunamiAlerts, activityByVolcano,
@@ -111,6 +112,7 @@ function Shell() {
   const [tsunamiAlerts, setTsunamiAlerts] = useState<TsunamiAlert[]>([]);
   const [tsunamiInfo, setTsunamiInfo] = useState<SourceInfo>({ id: 'tsunami', label: 'NOAA Tsunami Centers', ok: false, updated: null });
   const [quakeInfo, setQuakeInfo] = useState<SourceInfo>({ id: 'quakes', label: 'Terremotos', ok: false, updated: null });
+  const [volcanoSeismicInfo, setVolcanoSeismicInfo] = useState<SourceInfo>({ id: 'volcano-seismic', label: 'Sismicidade próxima aos vulcões', ok: false, updated: null });
   const [volcanoes, setVolcanoes] = useState<Volcano[]>([]);
   const [volcanoInfo, setVolcanoInfo] = useState<SourceInfo>({ id: 'gvp', label: 'Smithsonian GVP', ok: false, updated: null });
   const [notifs, setNotifs] = useState<NotifEntry[]>(() => { try { return JSON.parse(localStorage.getItem('tp.notifs') || '[]'); } catch { return []; } });
@@ -120,10 +122,17 @@ function Shell() {
   const [reportsError, setReportsError] = useState<string | null>(null);
   const [selQuake, setSelQuake] = useState<Quake | null>(null);
   const [selVolcano, setSelVolcano] = useState<Volcano | null>(null);
+  // Mantém o painel de detalhes sincronizado quando chega um novo boletim,
+  // uma atualização sísmica ou uma mudança de nível de risco.
+  useEffect(() => {
+    if (!selVolcano) return;
+    const latest = volcanoes.find((item) => item.vn === selVolcano.vn);
+    if (latest && latest !== selVolcano) setSelVolcano(latest);
+  }, [volcanoes, selVolcano]);
   const [focus, setFocus] = useState<{ lat: number; lon: number; zoom: number; id: string; kind: 'quake' | 'volcano' | 'place'; name?: string } | null>(null);
   const [showNotifs, setShowNotifs] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [showSide, setShowSide] = useState(false);
+  const [showSide, setShowSide] = useState(() => typeof window !== 'undefined' && window.matchMedia('(max-width: 760px)').matches);
   const [online, setOnline] = useState(navigator.onLine);
   const mapRef = useRef<L.Map | null>(null);
   const seenQuakes = useRef<Set<string>>(loadStoredSet('tp.seen'));
@@ -136,6 +145,10 @@ function Shell() {
   const baseline = useRef({ quakes: false, eruptions: false });
   const reportsBaseline = useRef(false);
   const ongoingRef = useRef<Set<number>>(new Set());
+  const ongoingRef2 = useRef<Map<number, { start: string; end: string | null; vei: number | null }>>(new Map());
+  const volcanicQuakesRef = useRef<Quake[]>([]);
+  const riskReportsRef = useRef<ReportItem[]>([]);
+  const volcanicSeismicRunning = useRef(false);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
 
@@ -169,7 +182,6 @@ function Shell() {
   }, []);
 
   /* ---------- Catálogo de vulcões + alertas de observatórios (1x) ---------- */
-  const ongoingRef2 = useRef<Map<number, { start: string; end: string | null; vei: number | null }>>(new Map());
   const recentRef = useRef<Set<number>>(new Set());
   const reportedCurrentEruptionsRef = useRef<Set<number>>(new Set());
   const activeRef = useRef<Set<number>>(new Set());
@@ -189,7 +201,13 @@ function Shell() {
   const pleistoceneLoading = useRef(false);
 
   const withActivity = useCallback((list: Volcano[]) =>
-    list.map((v) => (activityRef.current.has(v.vn) ? { ...v, activity: activityRef.current.get(v.vn) } : v)), []);
+    list.map((v) => {
+      const enriched = activityRef.current.has(v.vn) ? { ...v, activity: activityRef.current.get(v.vn) } : v;
+      return { ...enriched, risk: assessVolcanoRisk(enriched, {
+        quakes: volcanicQuakesRef.current, reports: riskReportsRef.current,
+        ongoing: ongoingRef2.current.get(v.vn) ?? null,
+      }) };
+    }), []);
 
   const classifyAll = useCallback((ongoing: Set<number>, alerts?: AlertMaps) => {
     const confirmedCurrent = new Set([...ongoing, ...reportedCurrentEruptionsRef.current]);
@@ -416,6 +434,40 @@ function Shell() {
     return () => { alive = false; window.clearInterval(retry); window.removeEventListener('online', onOnline); };
   }, [settings.showPleistoceneVolcanoes, pleistoceneLoaded, withActivity]);
 
+  /* ---------- Sismicidade para classificação de risco vulcânico ---------- */
+  const refreshVolcanoSeismic = useCallback(async () => {
+    if (volcanicSeismicRunning.current) return;
+    volcanicSeismicRunning.current = true;
+    try {
+      // Janela fixa de 7 dias com magnitude mínima 1.0: não depende do filtro
+      // visual do usuário e permite comparar 24 h recentes contra os 6 dias prévios.
+      const result = await loadQuakes('week', 1.0);
+      volcanicQuakesRef.current = result.quakes;
+      setVolcanoSeismicInfo({
+        id: 'volcano-seismic', label: 'Sismicidade próxima aos vulcões', ok: true,
+        updated: Date.now(), error: result.error,
+      });
+      setVolcanoes((current) => withActivity(current));
+    } catch (error) {
+      // Preserva a última janela válida; nunca rebaixa vulcões por falha de feed.
+      setVolcanoSeismicInfo((prev) => ({ ...prev, ok: false, stale: volcanicQuakesRef.current.length > 0,
+        error: String((error as Error)?.message || error) }));
+    } finally { volcanicSeismicRunning.current = false; }
+  }, [withActivity]);
+
+  useEffect(() => {
+    void refreshVolcanoSeismic();
+    const timer = window.setInterval(() => { void refreshVolcanoSeismic(); }, 5 * 60_000);
+    const onAvailable = () => { if (document.visibilityState === 'visible' && navigator.onLine) void refreshVolcanoSeismic(); };
+    document.addEventListener('visibilitychange', onAvailable);
+    window.addEventListener('online', onAvailable);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onAvailable);
+      window.removeEventListener('online', onAvailable);
+    };
+  }, [refreshVolcanoSeismic]);
+
   /* ---------- Terremotos (inicial + polling) ---------- */
   const fetchQuakes = useCallback(async (first = false) => {
     if (quakeFetchRunning.current) return;
@@ -589,6 +641,7 @@ function Shell() {
   useEffect(() => {
     if (!reports) return;
     const now = Date.now();
+    riskReportsRef.current = reports.items;
     activityRef.current = activityByVolcano(reports.items);
     reportedCurrentEruptionsRef.current = new Set(reports.items
       .filter((item) => item.kind === 'OFICIAL'
@@ -685,12 +738,12 @@ function Shell() {
     const m = settings.minMag;
     const c24 = quakes.filter((q) => q.time > now - 86400e3 && q.mag >= m).length;
     const c7 = quakes.filter((q) => q.time > now - 7 * 86400e3 && q.mag >= m).length;
-    const erupting = volcanoes.filter((v) => v.holocene && v.status === 'ERUPCAO').length;
+    const erupting = volcanoes.filter((v) => v.holocene && (v.risk?.rank ?? 0) > 0).length;
     return { c24, c7, erupting };
   }, [quakes, volcanoes, settings.minMag]);
 
   const sortedQuakes = useMemo(() => [...quakes].sort((a, b) => b.time - a.time), [quakes]);
-  const eruptingList = useMemo(() => volcanoes.filter((v) => v.holocene && v.status === 'ERUPCAO').sort((a, b) => (b.lastEruption ?? 0) - (a.lastEruption ?? 0)), [volcanoes]);
+  const eruptingList = useMemo(() => volcanoes.filter((v) => v.holocene && (v.risk?.rank ?? 0) > 0).sort((a, b) => (b.risk?.rank ?? 0) - (a.risk?.rank ?? 0) || (b.lastEruption ?? 0) - (a.lastEruption ?? 0)), [volcanoes]);
 
   const historicalCount = HISTORICAL_GEOLOGY.length;
   const holoceneCount = volcanoes.filter((v) => v.holocene).length;
@@ -768,6 +821,7 @@ function Shell() {
         <span className={`chip ${tsunamiInfo.ok ? (tsunamiInfo.stale ? 'stale' : 'ok') : 'err'}`} title={tsunamiInfo.error || 'Alertas oficiais NOAA PTWC/NTWC'}>
           🌊 Tsunami {tsunamiAlerts.filter((a) => a.actionable).length > 0 ? `· ${tsunamiAlerts.filter((a) => a.actionable).length} alerta(s)` : tsunamiInfo.ok ? '· sem alerta ativo' : '· n/d'}
         </span>
+        <span className={`chip ${volcanoSeismicInfo.ok ? 'ok' : volcanoSeismicInfo.stale ? 'stale' : 'err'}`} title={volcanoSeismicInfo.error || 'Janela fixa de 7 dias, magnitude mínima 1.0; comparação das últimas 24 h com os 6 dias anteriores.'}>Sismicidade vulcânica {volcanoSeismicInfo.ok ? `· ${fmtTime(volcanoSeismicInfo.updated ?? 0)}` : '· indisponível'}</span>
         <span className="chip stat">{t('stats.24h')} <b>{stats.c24}</b></span>
         <span className="chip stat">{t('stats.7d')} <b>{stats.c7}</b></span>
         <button
@@ -775,7 +829,7 @@ function Shell() {
           onClick={() => { setTab('volcanoes'); setShowSide(true); upd({ volcanoFilter: 'erupting' }); }}
           title={t('side.tab.erupting')}
         >
-          {t('stats.erupting')} <b>{stats.erupting}</b>
+          {t('side.tab.erupting')} <b>{stats.erupting}</b>
         </button>
       </div>
 
@@ -867,10 +921,10 @@ function Shell() {
                   const inf = ongoingRef2.current.get(v.vn);
                   return (
                     <li key={v.vn} className={selVolcano?.vn === v.vn ? 'sel' : ''} onClick={() => selectVolcano(v)}>
-                      <span className="m-badge v-erup">{t('status.ERUPCAO').slice(0, 5)}</span>
+                      <span className={`m-badge ${v.risk?.level === 'RED' ? 'v-erup' : v.risk?.level === 'ORANGE' ? 'v-attention' : v.risk?.level === 'YELLOW' ? 'v-activity' : 'v-normal'}`}>{v.risk?.label ?? 'NORMAL'}</span>
                       <div className="li-main">
                         <span className="li-title">{v.name}</span>
-                        <span className="li-sub">{v.country} · {t('erupt.start')}: {inf?.start ?? v.lastEruption ?? t('pp.noRecord')} · {t('erupt.last')}: {inf?.end ?? t('erupt.ongoing')}</span>
+                        <span className="li-sub">{v.country} · {v.status === 'ERUPCAO' ? `${t('erupt.start')}: ${inf?.start ?? v.lastEruption ?? t('pp.noRecord')} · ${t('erupt.last')}: ${inf?.end ?? t('erupt.ongoing')}` : (v.activity?.map((k) => t(`cat.${k}`)).join(' · ') || 'Atualização de observatório')}</span>
                         {v.alertInfo && (
                           <span className="li-sub">
                             {v.alertInfo.source} · {t('pp.alertLevel')} {v.alertInfo.level}{v.alertInfo.colorCode ? ` · ${v.alertInfo.colorCode}` : ''}

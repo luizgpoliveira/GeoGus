@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import type { Quake, ReportItem, Volcano } from '../types';
 import { GVP_PAGE, loadVolcanoDetail, loadVolcanoEruptions, loadWikipedia, type VolcanoHistory } from '../api';
 import VolcanoPhoto from './VolcanoPhoto';
@@ -37,9 +37,14 @@ export function VolcanoDetails({ v, reports = [], onClose }: { v: Volcano; repor
         <button className="icon-btn" onClick={onClose} aria-label="✕">✕</button>
       </header>
       <div className="drawer-body">
-        <span className="badge status" style={{ background: { ERUPCAO: '#ff3b30', RECENTE: '#a78bfa', ATIVO: '#ff9f0a', DORMENTE: '#ffd60a', EXTINTO: '#8e8e93', INDEFINIDO: '#5e5ce6' }[v.status] }}>
-          {t(`status.${v.status}`)}
-        </span>
+        <span className="badge geology-status">Status geológico GVP: {t(`status.${v.status}`)}</span>
+        <section className="volcano-risk-banner" style={{ '--risk-color': v.risk?.color ?? '#22c55e' } as CSSProperties}>
+          <strong>{v.risk?.label ?? 'NORMAL'} · ALERTA OPERACIONAL GEOGUS</strong>
+          {(v.risk?.reasons ?? ['Nenhum sinal acima do padrão foi identificado nas fontes disponíveis.']).map((reason, index) => (
+            <p key={index}>{reason}</p>
+          ))}
+          <p>Confiança do sinal: {v.risk?.confidence ?? 'LIMITADA'} · O nível calculado não substitui o alerta oficial do observatório.</p>
+        </section>
         {v.activity?.length ? (
           <div className="icard-cats" style={{ marginTop: 8 }}>
             {v.activity.slice(0, 6).map((k) => <span key={k} className={`tag cat-${k}`}>{t(`cat.${k}` as any)}</span>)}
@@ -50,13 +55,13 @@ export function VolcanoDetails({ v, reports = [], onClose }: { v: Volcano; repor
           <div><span>{t('dt.country')}</span><b>{v.country}</b></div>
           <div><span>{t('dt.type')}</span><b>{v.type}</b></div>
           <div><span>{t('pp.lastEruption')}</span><b>{v.lastEruption ?? t('pp.noRecord')}</b></div>
-          {v.alertInfo && (
-            <div>
-              <span>{t('pp.alertLevel')}</span>
-              <b>{v.alertInfo.source} · {v.alertInfo.level}{v.alertInfo.colorCode ? ` · ${v.alertInfo.colorCode}` : ''}{v.alertInfo.noticeTime ? ` · ${t('pp.bulletin')} ${v.alertInfo.noticeTime}` : ''}</b>
-              {v.alertInfo.details && <div className="muted small">{v.alertInfo.details}</div>}
+          {(v.alertInfos?.length ? v.alertInfos : v.alertInfo ? [v.alertInfo] : []).map((alert) => (
+            <div key={`${alert.source}-${alert.level}`}>
+              <span>{t('pp.alertLevel')} · {alert.source}</span>
+              <b>{alert.level}{alert.colorCode ? ` · ${alert.colorCode}` : ''}{alert.noticeTime ? ` · ${t('pp.bulletin')} ${alert.noticeTime}` : ''}</b>
+              {alert.details && <div className="muted small">{alert.details}</div>}
             </div>
-          )}
+          ))}
           <div><span>{t('pp.elevation')}</span><b>{v.elevation != null ? `${v.elevation} m` : t('pp.na')}</b></div>
           <div><span>{t('pp.coords')}</span><b>{v.lat.toFixed(3)}, {v.lon.toFixed(3)}</b></div>
           <div><span>{t('dt.pop10')}</span><b>{v.pop?.p10 != null ? v.pop.p10.toLocaleString(locale) : t('pp.na')}</b></div>

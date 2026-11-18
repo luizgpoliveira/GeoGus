@@ -33,24 +33,24 @@ const VOLCANO_PATH = 'M2 21 L9 7 L11.2 11.5 L12.5 9 L14 12 L15 9.5 L22 21 Z';
 const BOLT_PATH = 'M13.5 2 L4.5 13.5 L10 13.5 L8.5 22 L19.5 10 L13 10 Z';
 
 function volcanoIcon(v: Volcano): L.DivIcon {
-  const c = STATUS_META[v.status]?.color ?? '#8e8e93';
-  const erupting = v.status === 'ERUPCAO';
-  const recent = v.status === 'RECENTE';
-  const active = v.status === 'ATIVO';
-  const size = erupting ? 30 : recent ? 25 : 22;
-  const pulseClass = erupting ? 'erupting' : recent ? 'recent' : active ? 'active' : '';
+  const riskLevel = v.risk?.level ?? 'GREEN';
+  const c = v.risk?.color ?? '#22c55e';
+  const pulseClass = riskLevel === 'RED' ? 'risk-red'
+    : riskLevel === 'ORANGE' ? 'risk-orange'
+      : riskLevel === 'YELLOW' ? 'risk-yellow' : '';
+  const size = riskLevel === 'RED' ? 31 : riskLevel === 'ORANGE' ? 29 : riskLevel === 'YELLOW' ? 27 : 22;
+  const label = riskLevel === 'RED' ? 'perigo'
+    : riskLevel === 'ORANGE' ? 'atenção'
+      : riskLevel === 'YELLOW' ? 'aviso' : 'normal / sem sinal elevado detectado';
   return L.divIcon({
     className: 'volc-icon-wrap',
-    // Pulsação em camadas: erupção confirmada (rápida), atividade recente
-    // (média) e vulcão ativo (lenta e discreta).
-    html: `<div class="volc-icon ${pulseClass}" style="--c:${c};--marker-size:${size}px" role="img" aria-label="${v.name}${erupting ? ' — em erupção' : recent ? ' — atividade recente' : active ? ' — vulcão ativo' : ''}">` +
-      `<svg viewBox="0 0 24 24" width="${erupting ? 20 : 16}" height="${erupting ? 20 : 16}" aria-hidden="true">` +
+    // Verde é o estado visual padrão; só sinais amarelos/laranja/vermelhos pulsam.
+    html: `<div class="volc-icon ${pulseClass}" style="--c:${c};--marker-size:${size}px" role="img" aria-label="${v.name} — ${label}">` +
+      `<svg viewBox="0 0 24 24" width="${riskLevel === 'RED' ? 20 : 16}" height="${riskLevel === 'RED' ? 20 : 16}" aria-hidden="true">` +
       `<path d="${VOLCANO_PATH}" fill="${c}" stroke="rgba(0,0,0,.72)" stroke-width="1.2" stroke-linejoin="round"/>` +
-      (erupting ? '<circle cx="12" cy="6" r="1.7" fill="#fff" opacity=".92"/><circle cx="14.6" cy="3.8" r="1.15" fill="#fff" opacity=".65"/>' : '') +
+      (riskLevel === 'RED' ? '<circle cx="12" cy="6" r="1.7" fill="#fff" opacity=".92"/><circle cx="14.6" cy="3.8" r="1.15" fill="#fff" opacity=".65"/>' : '') +
       '</svg></div>',
-    iconSize: [size, size],
-    iconAnchor: [size / 2, size / 2],
-    tooltipAnchor: [0, -size / 2],
+    iconSize: [size, size], iconAnchor: [size / 2, size / 2], tooltipAnchor: [0, -size / 2],
   });
 }
 
@@ -89,10 +89,13 @@ function pleistoceneClusterIcon(cluster: any): L.DivIcon {
   });
 }
 
-function superVolcanoIcon(): L.DivIcon {
+function superVolcanoIcon(volcano: Volcano): L.DivIcon {
+  const level = volcano.risk?.level ?? 'GREEN';
+  const pulseClass = level === 'RED' ? 'risk-red' : level === 'ORANGE' ? 'risk-orange' : level === 'YELLOW' ? 'risk-yellow' : '';
+  const color = volcano.risk?.color ?? '#22c55e';
   return L.divIcon({
     className: 'super-volcano-wrap',
-    html: '<span class="super-volcano-marker" aria-hidden="true">✦</span>',
+    html: `<span class="super-volcano-marker ${pulseClass}" style="--risk-color:${color}" aria-label="${volcano.name} — ${volcano.risk?.label ?? 'NORMAL'}">✦</span>`,
     iconSize: [36, 36], iconAnchor: [18, 18],
   });
 }
@@ -112,11 +115,16 @@ function superVolcanoPopup(volcano: Volcano): HTMLElement {
   const evidence = document.createElement('p'); evidence.textContent = info?.evidence || 'Sistema de grande caldeira selecionado para destaque no mapa.'; root.appendChild(evidence);
   const note = document.createElement('p'); note.className = 'historical-geo-note';
   note.textContent = info?.classification === 'supereruption-documented'
-    ? 'Este sistema é citado pelo USGS entre os exemplos de supervulcões/supererupções. A classificação descreve somente seu histórico e não indica atividade, alerta ou perigo iminente.'
+    ? 'Este sistema é citado pelo USGS entre os exemplos de supervulcões/supererupções. A classificação descreve somente seu histórico; o nível operacional atual é calculado separadamente abaixo.'
     : info?.classification === 'large-caldera-system'
-      ? 'Este sistema é destacado por ser uma grande caldeira. Isso não significa que tenha uma supererupção VEI 8 confirmada, nem indica atividade, alerta ou perigo iminente.'
-      : 'Este sistema foi incluído como grande caldeira candidata/de interesse. Isso não comprova uma supererupção VEI 8. Não indica atividade, alerta ou perigo iminente.';
+      ? 'Este sistema é destacado por ser uma grande caldeira. Isso não significa que tenha uma supererupção VEI 8 confirmada; o nível operacional atual é calculado separadamente abaixo.'
+      : 'Este sistema foi incluído como grande caldeira candidata/de interesse. Isso não comprova uma supererupção VEI 8; o nível operacional atual é calculado separadamente abaixo.';
   root.appendChild(note);
+  if (volcano.risk) {
+    const risk = document.createElement('p'); risk.className = 'historical-geo-note';
+    risk.textContent = `Alerta operacional GeoGus: ${volcano.risk.label}. ${volcano.risk.reasons.join(' ')}`;
+    root.appendChild(risk);
+  }
   const gvp = document.createElement('a'); gvp.href = `https://volcano.si.edu/volcano.cfm?vn=${volcano.vn}`; gvp.target = '_blank'; gvp.rel = 'noopener noreferrer'; gvp.textContent = 'Perfil do Smithsonian GVP ↗'; root.appendChild(gvp);
   const source = document.createElement('a'); source.href = info?.sourceUrl || 'https://www.usgs.gov/faqs/what-a-supervolcano-what-a-supereruption'; source.target = '_blank'; source.rel = 'noopener noreferrer'; source.textContent = `Evidência: ${info?.sourceLabel || 'USGS'} ↗`; root.appendChild(source);
   return root;
@@ -251,20 +259,33 @@ function alertLabel(v: Volcano, t: any): string | null {
   return `${a.source} · ${lvl}${a.noticeTime ? ` · ${t('pp.bulletin')} ${a.noticeTime}` : ''}`;
 }
 
+function escapeHtml(value: unknown): string {
+  return String(value ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]!));
+}
+
 function volcanoPopupHtml(v: Volcano, ongoing: Map<number, { start: string; end: string | null; vei: number | null }> | undefined, t: any): HTMLElement {
   const meta = STATUS_META[v.status] ?? STATUS_META.INDEFINIDO;
   const alert = alertLabel(v, t);
+  const risk = v.risk;
   const inf = ongoing?.get(v.vn);
+  const riskLabel = risk?.label ?? 'NORMAL';
+  const riskColor = risk?.color ?? '#22c55e';
+  const reasons = (risk?.reasons || ['Nenhum sinal acima do padrão foi identificado nas fontes disponíveis.'])
+    .map((reason) => `<li>${escapeHtml(reason)}</li>`).join('');
   const el = document.createElement('div');
   el.className = 'pp';
   el.innerHTML = `
-    <h3>${v.name} ${v.status === 'ERUPCAO' ? `<span class="badge live">${t('status.ERUPCAO')}</span>` : ''}</h3>
-    <div class="row">${v.country} · ${v.type}</div>
-    <div class="kv"><span>${t('pp.status')}</span><b style="color:${meta.color}">${t(`status.${v.status}`)}</b></div>
-    ${v.activity?.length ? `<div class="pp-cats">${v.activity.slice(0, 5).map((k) => `<span class="tag cat-${k}">${t(`cat.${k}`)}</span>`).join('')}</div>` : ''}
-    ${alert ? `<div class="kv"><span>${t('pp.alertLevel')}</span><b>${alert}</b></div>` : ''}
+    <h3>${escapeHtml(v.name)}</h3>
+    <div class="row">${escapeHtml(v.country)} · ${escapeHtml(v.type)}</div>
+    <div class="kv"><span>Alerta operacional GeoGus</span><b style="color:${riskColor}">${riskLabel}</b></div>
+    <div class="muted small">Confiança do sinal: ${risk?.confidence ?? 'LIMITADA'} · Atualizado ${risk ? new Date(risk.updatedAt).toLocaleString() : '—'}</div>
+    <ul class="volcano-risk-reasons">${reasons}</ul>
+    ${risk?.seismic24h ? `<div class="kv"><span>Sismicidade até 15 km</span><b>${risk.seismic24h} evento(s) / 24 h · ${risk.seismicPrevious6d} nos 6 dias anteriores</b></div>` : ''}
+    ${v.activity?.length ? `<div class="pp-cats">${v.activity.slice(0, 5).map((k) => `<span class="tag cat-${escapeHtml(k)}">${escapeHtml(t(`cat.${k}`))}</span>`).join('')}</div>` : ''}
+    ${alert ? `<div class="kv"><span>${t('pp.alertLevel')}</span><b>${escapeHtml(alert)}</b></div>` : ''}
+    <div class="kv"><span>Status geológico GVP</span><b style="color:${meta.color}">${t(`status.${v.status}`)}</b></div>
     <div class="kv"><span>${t('pp.lastEruption')}</span><b>${v.lastEruption != null ? v.lastEruption : t('pp.noRecord')}</b></div>
-    ${v.status === 'ERUPCAO' ? `<div class="kv"><span>${t('erupt.last')}</span><b>${inf?.end ?? t('erupt.ongoing')}</b></div>` : ''}
+    ${v.status === 'ERUPCAO' ? `<div class="kv"><span>${t('erupt.last')}</span><b>${escapeHtml(inf?.end ?? t('erupt.ongoing'))}</b></div>` : ''}
     <div class="kv"><span>${t('pp.elevation')}</span><b>${v.elevation != null ? v.elevation + ' m' : t('pp.na')}</b></div>
     <div class="kv"><span>${t('pp.source')}</span><b>Smithsonian GVP${v.alertInfo ? ` · ${v.alertInfo.source}` : ''}</b></div>
     <button class="btn-more" data-act="more" data-vn="${v.vn}">${t('pp.more')}</button>
@@ -360,6 +381,7 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
     v.alertInfo?.noticeTime || '', v.alertInfo?.details || '',
     v.image?.file || '', v.image?.caption || '', v.image?.credit || '',
     (v.activity || []).join(','),
+    v.risk?.level || 'GREEN', v.risk?.reasons.join(';') || '', v.risk?.seismic24h ?? 0, v.risk?.seismicPrevious6d ?? 0,
   ].join('~')).join('|'), [volcanoes]);
   const ongoingMarkerKey = useMemo(() => [...(ongoing || new Map()).entries()]
     .sort((a, b) => Number(a[0]) - Number(b[0]))
@@ -451,8 +473,10 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
         if (settings.country && v.country !== settings.country) continue;
         if (settings.volcanoFilter === 'active' && !(v.status === 'ERUPCAO' || v.status === 'ATIVO')) continue;
         if (settings.volcanoFilter === 'inactive' && (v.status === 'ERUPCAO' || v.status === 'ATIVO')) continue;
-        if (flat && v.status !== 'ERUPCAO') continue;
-        const m = L.marker([v.lat, v.lon], { icon: volcanoIcon(v), title: v.name, riseOnHover: true, zIndexOffset: v.status === 'ERUPCAO' ? 900 : 450 });
+        const hasActivity = (v.risk?.rank ?? 0) > 0;
+        if (flat && !hasActivity) continue;
+        const severe = v.risk?.level === 'RED';
+        const m = L.marker([v.lat, v.lon], { icon: volcanoIcon(v), title: v.name, riseOnHover: true, zIndexOffset: severe ? 950 : hasActivity ? 850 : 450 });
         m.bindPopup(() => volcanoPopupHtml(v, ongoingRef.current, t), { maxWidth: 300 });
         m.on('click', () => cbRef.current.onSelectVolcano(v));
         g.addLayer(m);
@@ -495,7 +519,7 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
     if (!map || !group) return;
     group.clearLayers();
     const visibleByFilter = (v: Volcano) => {
-      if (settings.volcanoFilter === 'erupting') return v.status === 'ERUPCAO';
+      if (settings.volcanoFilter === 'erupting') return (v.risk?.rank ?? 0) > 0;
       if (settings.volcanoFilter === 'active') return v.status === 'ERUPCAO' || v.status === 'ATIVO';
       if (settings.volcanoFilter === 'inactive') return v.status !== 'ERUPCAO' && v.status !== 'ATIVO';
       return true;
@@ -520,7 +544,7 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
       if (settings.country && volcano.country !== settings.country) continue;
       if (!Number.isFinite(volcano.lat) || !Number.isFinite(volcano.lon)) continue;
       const marker = L.marker([volcano.lat, volcano.lon], {
-        icon: superVolcanoIcon(), title: info.displayName,
+        icon: superVolcanoIcon(volcano), title: info.displayName,
         alt: `Grande caldeira ${info.displayName}; classificação histórica, sem indicação de atividade atual`, zIndexOffset: 1200,
       });
       marker.bindPopup(() => superVolcanoPopup(volcano), { maxWidth: 360 });
@@ -624,11 +648,10 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
           <span>{t('legend.title')}</span><span className="legend-chevron" aria-hidden="true">{legendCollapsed ? '＋' : '−'}</span>
         </button>
         <div id="map-legend-content" className="legend-content" aria-hidden={legendCollapsed}>
-          <span><i className="lg tri erup" /> {t('legend.erupting')}</span>
-          <span><i className="lg tri recent" /> {t('legend.recent')}</span>
-          <span><i className="lg tri ativo" /> {t('legend.active')}</span>
-          <span><i className="lg tri dormente" /> {t('legend.dormant')}</span>
-          <span><i className="lg tri extinto" /> {t('legend.extinct')}</span>
+          <span><i className="lg tri normal" /> {t('legend.normal')}</span>
+          <span><i className="lg tri aviso" /> {t('legend.advisory')}</span>
+          <span><i className="lg tri atencao" /> {t('legend.attention')}</span>
+          <span><i className="lg tri perigo" /> {t('legend.danger')}</span>
           {settings.showPleistoceneVolcanoes && <span><i className="lg-historical">△</i> Vulcões do Pleistoceno (catálogo mundial GVP)</span>}
           {settings.showSupervolcanoes && <span><i className="lg-super">✦</i> Supererupções documentadas / grandes caldeiras candidatas</span>}
           {settings.showHistoricalGeology && <span><i className="lg-historical">◇</i> Estruturas geológicas muito antigas</span>}

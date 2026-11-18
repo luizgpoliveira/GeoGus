@@ -71,7 +71,10 @@ h2 { font-size: 17px; } h3 { font-size: 13px; text-transform: uppercase; letter-
 .li-sub { color: var(--muted); font-size: 11.5px; }
 .m-badge { flex: 0 0 auto; width: 42px; height: 42px; display: flex; align-items: center; justify-content: center; border-radius: 10px; font-weight: 700; font-size: 13px; background: var(--panel2); border: 1px solid var(--border); }
 .m3 { color: #7ce09b; } .m4 { color: var(--yellow); } .m5 { color: var(--accent2); } .m6 { color: var(--red); } .m7, .m8, .m9 { color: var(--red); background: rgba(255,59,48,.15); }
-.v-erup { color: var(--red); border-color: rgba(255,59,48,.5); font-size: 10px; }
+.v-erup { color: var(--red); border-color: rgba(255,59,48,.5); font-size: 10px; background: rgba(255,59,48,.10); }
+.v-attention { color: #fb923c; border-color: rgba(249,115,22,.55); font-size: 10px; background: rgba(249,115,22,.10); }
+.v-activity { color: #ffd60a; border-color: rgba(255,214,10,.55); font-size: 10px; background: rgba(255,214,10,.09); }
+.v-normal { color: #4ade80; border-color: rgba(34,197,94,.45); font-size: 10px; background: rgba(34,197,94,.08); }
 
 /* mapa */
 .map-wrap { flex: 1; position: relative; min-width: 0; }
@@ -101,10 +104,10 @@ h2 { font-size: 17px; } h3 { font-size: 13px; text-transform: uppercase; letter-
 .lg-alert { width: 11px; height: 11px; display: inline-block; flex: 0 0 auto; border: 2px solid #ff453a; border-radius: 50%; box-shadow: 0 0 0 3px rgba(255,69,58,.2); }
 .lg { width: 14px; height: 14px; display: inline-block; flex: 0 0 auto; }
 .lg.tri { width: 0; height: 0; border-left: 7px solid transparent; border-right: 7px solid transparent; }
-.lg.tri.erup { border-bottom: 12px solid var(--red); }
-.lg.tri.ativo { border-bottom: 12px solid var(--accent2); }
-.lg.tri.dormente { border-bottom: 12px solid var(--yellow); }
-.lg.tri.extinto { border-bottom: 12px solid #8e8e93; }
+.lg.tri.normal { border-bottom: 12px solid #22c55e; }
+.lg.tri.aviso { border-bottom: 12px solid #facc15; }
+.lg.tri.atencao { border-bottom: 12px solid #f97316; }
+.lg.tri.perigo { border-bottom: 12px solid #ef4444; }
 .lg.circle { border-radius: 50%; width: 11px; height: 11px; background: rgba(100,210,255,.4); border: 2px solid var(--blue); }
 
 /* popups leaflet */
@@ -122,24 +125,27 @@ h2 { font-size: 17px; } h3 { font-size: 13px; text-transform: uppercase; letter-
 .badge.mag { background: var(--panel2); color: var(--muted); }
 .badge.live { background: var(--red); color: #fff; margin-left: 4px; }
 
-/* Marcadores geográficos: ícone + anéis de pulsação independentes. */
+/* Marcadores vulcânicos por nível operacional: verde estático; amarelo/laranja/vermelho pulsam. */
 .volc-icon-wrap, .quake-icon-wrap { background: transparent; border: 0; overflow: visible; }
 .volc-icon-wrap, .quake-icon-wrap { display: flex; align-items: center; justify-content: center; }
 .volc-icon, .quake-icon { position: relative; width: var(--marker-size, 24px); height: var(--marker-size, 24px); display: flex; align-items: center; justify-content: center; isolation: isolate; overflow: visible; }
 .volc-icon svg, .quake-icon svg { position: relative; z-index: 2; display: block; filter: drop-shadow(0 1px 3px rgba(0,0,0,.9)); }
-.volc-icon.erupting::before, .volc-icon.erupting::after,
-.volc-icon.recent::before, .volc-icon.recent::after,
+.volc-icon.risk-yellow::before, .volc-icon.risk-yellow::after,
+.volc-icon.risk-orange::before, .volc-icon.risk-orange::after,
+.volc-icon.risk-red::before, .volc-icon.risk-red::after,
 .quake-icon.pulsing-recent::before, .quake-icon.pulsing-recent::after {
   content: ''; position: absolute; inset: -3px; border: 2px solid var(--c); border-radius: 50%;
   opacity: 0; pointer-events: none; z-index: 1; animation: geoMarkerRipple 2.4s ease-out infinite;
 }
-.volc-icon.erupting::after, .volc-icon.recent::after, .quake-icon.pulsing-recent::after { animation-delay: 1.2s; }
-.volc-icon.erupting::before, .volc-icon.erupting::after { animation-duration: 1.55s; border-width: 2.4px; }
-.volc-icon.erupting svg { animation: eruptIconGlow 1.25s ease-in-out infinite alternate; }
-.volc-icon.recent::before, .volc-icon.recent::after { animation-duration: 2.6s; border-color: #a78bfa; }
-.volc-icon.active::before { content: ''; position: absolute; inset: -2px; border: 1.5px solid var(--c); border-radius: 50%; opacity: 0; animation: geoMarkerRipple 4.2s ease-out infinite; pointer-events: none; z-index: 1; }
-.volc-icon.active { opacity: .96; }
+.volc-icon.risk-yellow::after, .volc-icon.risk-orange::after, .volc-icon.risk-red::after, .quake-icon.pulsing-recent::after { animation-delay: 1.2s; }
+.volc-icon.risk-yellow::before, .volc-icon.risk-yellow::after { animation-duration: 2.45s; border-width: 1.8px; }
+.volc-icon.risk-orange::before, .volc-icon.risk-orange::after { animation-duration: 1.65s; border-width: 2.2px; }
+.volc-icon.risk-red::before, .volc-icon.risk-red::after { animation-duration: 1.05s; border-width: 2.7px; }
+.volc-icon.risk-orange svg { filter: drop-shadow(0 0 5px rgba(249,115,22,.9)); }
+.volc-icon.risk-red svg { filter: drop-shadow(0 0 8px rgba(239,68,68,.98)); animation: eruptIconGlow .72s ease-in-out infinite alternate; }
+.volc-icon.active { opacity: 1; }
 .quake-icon.pulsing-recent::before, .quake-icon.pulsing-recent::after { animation-duration: 2.2s; }
+
 .quake-icon.alerted::before, .quake-icon.alerted::after { animation-duration: 1.1s; border-width: 2.6px; border-color: #ff453a; }
 .quake-icon.alerted svg { filter: drop-shadow(0 0 7px rgba(255,59,48,.98)); animation: quakeIconBeat 1.1s ease-in-out infinite; }
 
@@ -153,14 +159,14 @@ h2 { font-size: 17px; } h3 { font-size: 13px; text-transform: uppercase; letter-
 @keyframes quakeIconBeat { 0%,100% { transform: scale(1); } 50% { transform: scale(1.14); } }
 @keyframes clusterGlow { 0%,100% { box-shadow: 0 2px 8px rgba(0,0,0,.6), 0 0 0 3px rgba(100,210,255,.13); } 50% { box-shadow: 0 2px 12px rgba(0,0,0,.7), 0 0 0 8px rgba(100,210,255,.28); } }
 @keyframes clusterAlert { 0%,100% { box-shadow: 0 2px 8px rgba(0,0,0,.6), 0 0 0 3px rgba(255,159,10,.18); } 50% { box-shadow: 0 2px 14px rgba(0,0,0,.75), 0 0 0 9px rgba(255,69,58,.32); } }
-@media (prefers-reduced-motion: reduce) { .live-notification-toast { animation: none !important; } .volc-icon.erupting::before, .volc-icon.erupting::after, .volc-icon.recent::before, .volc-icon.recent::after, .volc-icon.active::before, .volc-icon.erupting svg, .quake-icon.pulsing-recent::before, .quake-icon.pulsing-recent::after, .quake-icon.alerted svg, .quake-cluster-live, .quake-cluster-highmag, .super-volcano-marker, .super-volcano-marker::before { animation: none !important; opacity: .55; } }
+@media (prefers-reduced-motion: reduce) { .live-notification-toast { animation: none !important; } .volc-icon.risk-yellow::before, .volc-icon.risk-yellow::after, .volc-icon.risk-orange::before, .volc-icon.risk-orange::after, .volc-icon.risk-red::before, .volc-icon.risk-red::after, .volc-icon.risk-red svg, .quake-icon.pulsing-recent::before, .quake-icon.pulsing-recent::after, .quake-icon.alerted svg, .quake-cluster-live, .quake-cluster-highmag, .super-volcano-marker, .super-volcano-marker::before { animation: none !important; opacity: .55; } }
 
 /* chip "em erupÃ§Ã£o" clicÃ¡vel */
 .chip.stat.erupting { cursor: pointer; font-family: inherit; background: transparent; appearance: none; }
-.chip.stat.erupting.on { outline: 1.5px solid var(--red); outline-offset: 1px; }
+.chip.stat.erupting.on { outline: 1.5px solid #ffd60a; outline-offset: 1px; }
 
 /* legenda: atividade recente */
-.lg.tri.recent { border-bottom: 12px solid #a78bfa; }
+
 .lg.bolt { display: inline-flex; align-items: center; justify-content: center; }
 
 /* drawers e painÃ©is */
@@ -369,6 +375,8 @@ h2 { font-size: 17px; } h3 { font-size: 13px; text-transform: uppercase; letter-
   .top-actions { grid-column: 3; display: flex; gap: 5px; }
   .top-actions .icon-btn { width: 38px; height: 40px; padding: 0; font-size: 16px; border-radius: 11px; }
 
+  /* No celular, ocultar a faixa técnica de bases conectadas; ela continua disponível no desktop. */
+  .statusbar { display: none !important; }
   .statusbar {
     position: absolute; top: calc(70px + env(safe-area-inset-top)); left: 8px; right: 8px; z-index: 1240;
     width: auto; padding: 4px 2px; gap: 5px; border: 0; background: transparent;
@@ -379,7 +387,7 @@ h2 { font-size: 17px; } h3 { font-size: 13px; text-transform: uppercase; letter-
   .statusbar .chip.stat:not(.erupting), .statusbar .chip.conn { display: none; }
 
   .intel {
-    position: absolute; top: calc(108px + env(safe-area-inset-top)); left: 8px; right: 8px; z-index: 1230;
+    position: absolute; top: calc(78px + env(safe-area-inset-top)); left: 8px; right: 8px; z-index: 1230;
     width: auto; border: 1px solid rgba(255,255,255,.13); border-radius: 12px;
     background: rgba(17,24,39,.91); backdrop-filter: blur(14px); box-shadow: 0 4px 16px rgba(0,0,0,.2);
   }
@@ -419,16 +427,20 @@ h2 { font-size: 17px; } h3 { font-size: 13px; text-transform: uppercase; letter-
   /* Painel de resultados em bottom-sheet, liberando o mapa atrás. */
   .sidebar {
     position: fixed; left: 8px; right: 8px; top: auto; bottom: calc(76px + env(safe-area-inset-bottom));
-    width: auto; max-width: none; height: min(66dvh, 620px); max-height: calc(100dvh - 150px);
+    width: auto; max-width: none; height: min(40dvh, 390px); max-height: calc(100dvh - 210px);
     flex: none; z-index: 1400; border: 1px solid rgba(255,255,255,.14); border-radius: 17px;
     box-shadow: 0 12px 36px rgba(0,0,0,.48); overflow: hidden;
     transform: translateY(calc(100% + 28px)); transition: transform .24s cubic-bezier(.2,.75,.25,1);
   }
   .sidebar.open { transform: translateY(0); }
-  .side-head { flex: 0 0 auto; padding: 9px; }
+  .side-head { flex: 0 0 auto; padding: 8px; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+  .side-head::-webkit-scrollbar { display: none; }
+  .side-head .tab { flex: 1 0 auto; min-width: 0; white-space: nowrap; }
+  .side-head .close-side { flex: 0 0 36px; }
   .tab { min-height: 38px; font-size: 11.5px; }
   .close-side { display: block; min-width: 36px; min-height: 36px; }
-  .side-body { overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+  .side-body { min-height: 0; flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+  .sidebar.open { transform: translateY(0); }
   .list li { min-height: 58px; padding: 10px 11px; }
   .updates { overflow-y: auto; }
 
@@ -463,9 +475,28 @@ h2 { font-size: 17px; } h3 { font-size: 13px; text-transform: uppercase; letter-
 }
 
 @media (max-height: 620px) and (max-width: 760px) {
-  .intel:not(.open) { top: calc(104px + env(safe-area-inset-top)); }
-  .intel.open { top: calc(104px + env(safe-area-inset-top)); }
+  .intel:not(.open) { top: calc(78px + env(safe-area-inset-top)); }
+  .intel.open { top: calc(78px + env(safe-area-inset-top)); }
   .intel-body, .intel-body-carousel-only { max-height: 34dvh; }
   .icard { max-height: 31dvh; }
-  .sidebar { height: 58dvh; }
+  .sidebar { height: 42dvh; max-height: calc(100dvh - 190px); }
 }
+
+
+/* Explicação do nível operacional de atividade vulcânica. */
+.volcano-risk-reasons { margin: 7px 0 9px; padding-left: 18px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.volcano-risk-reasons li + li { margin-top: 4px; }
+.volcano-risk-banner { margin: 8px 0 12px; padding: 10px 11px; border: 1px solid var(--line); border-left: 4px solid var(--risk-color, #22c55e); border-radius: 9px; background: rgba(255,255,255,.035); }
+.volcano-risk-banner strong { display: block; color: var(--risk-color, #22c55e); font-size: 13px; letter-spacing: .05em; }
+.volcano-risk-banner p { margin: 6px 0 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.super-volcano-marker { border-color: var(--risk-color, #22c55e); animation: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--risk-color, #22c55e) 18%, transparent), 0 2px 9px rgba(0,0,0,.65); }
+.super-volcano-marker:not(.risk-yellow):not(.risk-orange):not(.risk-red)::before { display: none; animation: none; }
+.super-volcano-marker.risk-yellow, .super-volcano-marker.risk-orange, .super-volcano-marker.risk-red { --c: var(--risk-color); position: relative; }
+.super-volcano-marker.risk-yellow { animation: superVolcanoGlow 2.5s ease-in-out infinite; }
+.super-volcano-marker.risk-orange { animation: superVolcanoGlow 1.65s ease-in-out infinite; }
+.super-volcano-marker.risk-red { animation: superVolcanoGlow 1.05s ease-in-out infinite; }
+.super-volcano-marker.risk-yellow::before, .super-volcano-marker.risk-orange::before, .super-volcano-marker.risk-red::before { content: ''; position: absolute; inset: -5px; border: 2px solid var(--risk-color); border-radius: 50%; opacity: 0; animation: geoMarkerRipple 2.4s ease-out infinite; pointer-events: none; }
+.super-volcano-marker.risk-orange::before { animation-duration: 1.65s; border-width: 2.4px; }
+.super-volcano-marker.risk-red::before { animation-duration: 1.05s; border-width: 2.8px; }
+
+.badge.geology-status { background: var(--panel2); color: var(--muted); border: 1px solid var(--line); }
