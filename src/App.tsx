@@ -13,7 +13,7 @@ import {
   loadHansStatus, loadPhivolcsStatus, loadPvmbgStatus, loadReports, loadTsunamiAlerts, activityByVolcano,
   type AlertMaps,
 } from './api';
-import { I18nContext, LANGS, LOCALE_TAG, makeT, useI18n, type Lang } from './i18n';
+import { I18nContext, LANGS, LOCALE_TAG, makeT, useI18n, type Key, type Lang } from './i18n';
 
 // O feed GeoJSON 7d do USGS é atualizado a cada minuto; alinhar o polling ao ciclo oficial.
 const POLL_QUAKES = 60_000;
@@ -931,7 +931,7 @@ function Shell() {
                       <span className={`m-badge ${v.risk?.level === 'RED' ? 'v-erup' : v.risk?.level === 'ORANGE' ? 'v-attention' : v.risk?.level === 'YELLOW' ? 'v-activity' : 'v-normal'}`}>{v.risk?.label ?? 'NORMAL'}</span>
                       <div className="li-main">
                         <span className="li-title">{v.name}</span>
-                        <span className="li-sub">{v.country} · {v.status === 'ERUPCAO' ? `${t('erupt.start')}: ${inf?.start ?? v.lastEruption ?? t('pp.noRecord')} · ${t('erupt.last')}: ${inf?.end ?? t('erupt.ongoing')}` : (v.activity?.map((k) => t(`cat.${k}`)).join(' · ') || 'Atualização de observatório')}</span>
+                        <span className="li-sub">{v.country} · {v.status === 'ERUPCAO' ? `${t('erupt.start')}: ${inf?.start ?? v.lastEruption ?? t('pp.noRecord')} · ${t('erupt.last')}: ${inf?.end ?? t('erupt.ongoing')}` : (v.activity?.map((k) => t(`cat.${k}` as Key)).join(' · ') || 'Atualização de observatório')}</span>
                         {v.alertInfo && (
                           <span className="li-sub">
                             {v.alertInfo.source} · {t('pp.alertLevel')} {v.alertInfo.level}{v.alertInfo.colorCode ? ` · ${v.alertInfo.colorCode}` : ''}

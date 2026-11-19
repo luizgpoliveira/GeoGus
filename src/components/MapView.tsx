@@ -472,9 +472,10 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
         center: [-10, -40], zoom: 3, minZoom: 1, maxZoom: 18,
         zoomControl: false, preferCanvas: true, touchZoom: true,
         scrollWheelZoom: !window.matchMedia('(pointer: coarse)').matches,
-        zoomSnap: 0.5, worldCopyJump: false,
-        maxBounds: L.latLngBounds([-85.0511, -180], [85.0511, 180]),
-        maxBoundsViscosity: 0.92,
+        zoomSnap: 0.5,
+        // Mantém a navegação horizontal contínua entre cópias do mundo.
+        // O Leaflet reposiciona a câmera sem quebrar os marcadores e overlays.
+        worldCopyJump: true,
       });
     } catch (error) {
       console.error('[GeoGus] Não foi possível iniciar o mapa Leaflet:', error);
@@ -522,6 +523,9 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
         fadeDuration: 120,
       }).addTo(map);
       const glMap = mapLibreLayer.getMaplibreMap();
+      // Repetição horizontal explícita: permite atravessar ±180° sem borda
+      // no mapa-base vetorial, em conjunto com worldCopyJump do Leaflet.
+      glMap.setRenderWorldCopies(true);
       const onStyleReady = () => {
         styleReady = true;
         if (fallbackTimer) window.clearTimeout(fallbackTimer);
@@ -531,8 +535,10 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
       glMap.once('style.load', onStyleReady);
       glMap.once('load', onStyleReady);
       if (glMap.isStyleLoaded()) onStyleReady();
-      glMap.on('error', (event: { error?: Error }) => {
-        if (!styleReady && event?.error) console.warn('[GeoGus] Erro ao carregar base vetorial:', event.error.message);
+      glMap.on('error', (event) => {
+        // Usa o tipo ErrorEvent fornecido pelo MapLibre. O campo error é
+        // ErrorLike (não necessariamente uma instância global de Error).
+        if (!styleReady && event.error) console.warn('[GeoGus] Erro ao carregar base vetorial:', event.error);
       });
       // O fallback só entra se o estilo inicial não carregar. Marcadores Leaflet
       // permanecem nas panes superiores e continuam funcionando normalmente.

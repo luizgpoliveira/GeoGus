@@ -14,8 +14,9 @@
     "test:periods": "node scripts/test-period-windows.mjs",
     "test:filters": "node --experimental-strip-types scripts/test-filter-visibility.mjs",
     "test:reports": "node scripts/test-report-interpretation.mjs",
-    "test:precisao": "npm run test:volcano && npm run test:periods && npm run test:filters && npm run test:reports && npm run test:brasil && npm run test:volcano-pulse",
-    "test:volcano-pulse": "node --experimental-strip-types scripts/test-volcano-map-pulse.mjs"
+    "test:precisao": "npm run test:volcano && npm run test:periods && npm run test:filters && npm run test:reports && npm run test:brasil && npm run test:volcano-pulse && npm run test:map-wrap",
+    "test:volcano-pulse": "node --experimental-strip-types scripts/test-volcano-map-pulse.mjs",
+    "test:map-wrap": "node scripts/test-map-world-wrap.mjs"
   },
   "dependencies": {
     "@maplibre/maplibre-gl-leaflet": "0.1.4",
