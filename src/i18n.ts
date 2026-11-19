@@ -25,6 +25,8 @@ const dict = {
   'stats.7d': { en: '7 d:', 'pt-BR': '7 d:', es: '7 d:', de: '7 T:' },
   'stats.erupting': { en: 'Volcano alerts:', 'pt-BR': 'Vulcões em alerta:', es: 'Volcanes en alerta:', de: 'Vulkanwarnungen:' },
   'filters.period': { en: 'Period', 'pt-BR': 'Período', es: 'Período', de: 'Zeitraum' },
+  'filters.period.hour': { en: 'Last hour', 'pt-BR': 'Última 1 hora', es: 'Última 1 hora', de: 'Letzte Stunde' },
+  'filters.period.12h': { en: 'Last 12 hours', 'pt-BR': 'Últimas 12 horas', es: 'Últimas 12 horas', de: 'Letzte 12 Stunden' },
   'filters.period.day': { en: '24 hours', 'pt-BR': '24 horas', es: '24 horas', de: '24 Stunden' },
   'filters.period.week': { en: '7 days', 'pt-BR': '7 dias', es: '7 días', de: '7 Tage' },
   'filters.period.month': { en: '30 days', 'pt-BR': '30 dias', es: '30 días', de: '30 Tage' },

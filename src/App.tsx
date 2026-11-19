@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import L from 'leaflet';
-import MapView from './components/MapView';
+import MapView, { type MapController } from './components/MapView';
 import SearchBar, { type Suggestion } from './components/SearchBar';
 import Intel, { UpdatesList } from './components/Intel';
 import { HISTORICAL_GEOLOGY } from './historicalGeology';
@@ -8,6 +7,7 @@ import { SUPER_VOLCANO_IDS } from './supervolcanoes';
 import { VolcanoDetails, QuakeDetails } from './components/Details';
 import type { NotifEntry, Quake, ReportItem, ReportsPayload, Settings, SourceInfo, TsunamiAlert, Volcano } from './types';
 import { assessVolcanoRisk } from './volcanoRisk';
+import { shouldShowPeriodFilter } from './filterVisibility';
 import {
   classifyVolcano, loadActiveSince1960, loadOngoingEruptions, loadRecentEruptions, loadQuakes, loadVolcanoCatalog, loadPleistoceneCatalog, countryPolygon,
   loadHansStatus, loadPhivolcsStatus, loadPvmbgStatus, loadReports, loadTsunamiAlerts, activityByVolcano,
@@ -81,7 +81,7 @@ const loadSettings = (): Settings => {
     // Na primeira abertura desta versão, adota 24 h; depois respeita o período
     // escolhido pelo usuário nas próximas sessões.
     const periodDefaultApplied = localStorage.getItem('tp.periodDefault24h.v1') === '1';
-    const savedPeriod = ['day', 'week', 'month'].includes(String(saved.period))
+    const savedPeriod = ['hour', '12h', 'day', 'week', 'month'].includes(String(saved.period))
       ? saved.period as Settings['period'] : 'day';
     const period = periodDefaultApplied ? savedPeriod : 'day';
     localStorage.setItem('tp.periodDefault24h.v1', '1');
@@ -134,7 +134,7 @@ function Shell() {
   const [showSettings, setShowSettings] = useState(false);
   const [showSide, setShowSide] = useState(() => typeof window !== 'undefined' && window.matchMedia('(max-width: 760px)').matches);
   const [online, setOnline] = useState(navigator.onLine);
-  const mapRef = useRef<L.Map | null>(null);
+  const mapRef = useRef<MapController | null>(null);
   const seenQuakes = useRef<Set<string>>(loadStoredSet('tp.seen'));
   const seenTsunami = useRef<Set<string>>(loadStoredSet('tp.tsunamiSeen'));
   const notificationKeys = useRef<Set<string>>(loadNotificationKeys());
@@ -719,9 +719,15 @@ function Shell() {
     if (!name) { map.flyTo([-10, -40], 3, { duration: 0.8 }); return; }
     const rings = await countryPolygon(name);
     if (!rings?.length) { map.flyTo([20, 0], 2); return; }
-    const pts = rings.flat().map(([la, lo]) => [la, lo] as [number, number]);
-    const bounds = L.latLngBounds(pts);
-    map.fitBounds(bounds.pad(0.06), { maxZoom: 8, duration: 0.8 });
+    const pts = rings.flat().filter(([la, lo]) => Number.isFinite(la) && Number.isFinite(lo));
+    if (!pts.length) { map.flyTo([20, 0], 2); return; }
+    const lats = pts.map(([la]) => la), lons = pts.map(([, lo]) => lo);
+    const latPad = Math.max(0.15, (Math.max(...lats) - Math.min(...lats)) * 0.06);
+    const lonPad = Math.max(0.15, (Math.max(...lons) - Math.min(...lons)) * 0.06);
+    map.fitBounds([
+      [Math.min(...lats) - latPad, Math.min(...lons) - lonPad],
+      [Math.max(...lats) + latPad, Math.max(...lons) + lonPad],
+    ], { maxZoom: 8, duration: 0.8 });
   }, []);
 
   /* ---------- Derivados ---------- */
@@ -834,25 +840,26 @@ function Shell() {
       </div>
 
       <div className="filters">
+        {shouldShowPeriodFilter(settings) && (
+          <label title="O período fica disponível com terremotos ou vulcões ativos. Boletins vulcânicos pontuais pulsam por até 24 h; erupções contínuas confirmadas pulsam enquanto permanecerem em andamento.">{t('filters.period')}
+            <select value={settings.period} onChange={(e) => upd({ period: e.target.value as Settings['period'] })}>
+              <option value="hour">{t('filters.period.hour')}</option>
+              <option value="12h">{t('filters.period.12h')}</option>
+              <option value="day">{t('filters.period.day')}</option>
+              <option value="week">{t('filters.period.week')}</option>
+              <option value="month">{t('filters.period.month')}</option>
+            </select>
+          </label>
+        )}
         {settings.showQuakes && (
-          <>
-            <label>{t('filters.period')}
-              <select value={settings.period} onChange={(e) => upd({ period: e.target.value as Settings['period'] })}>
-                <option value="day">{t('filters.period.day')}</option>
-                <option value="week">{t('filters.period.week')}</option>
-                <option value="month">{t('filters.period.month')}</option>
-              </select>
-            </label>
-            <label>{t('filters.minMag')}
-              <select value={settings.minMag} onChange={(e) => upd({ minMag: Number(e.target.value) })}>
-                <option value={1}>1.0+</option>
-                <option value={1}>1.0+</option>
-                <option value={2.5}>2.5+</option>
-                <option value={4.5}>4.5+</option>
-                <option value={5.5}>5.5+</option>
-              </select>
-            </label>
-          </>
+          <label>{t('filters.minMag')}
+            <select value={settings.minMag} onChange={(e) => upd({ minMag: Number(e.target.value) })}>
+              <option value={1}>1.0+</option>
+              <option value={2.5}>2.5+</option>
+              <option value={4.5}>4.5+</option>
+              <option value={5.5}>5.5+</option>
+            </select>
+          </label>
         )}
         <label>{t('filters.country')}
           <select value={settings.country} onChange={(e) => { upd({ country: e.target.value }); flyToCountry(e.target.value); }}>

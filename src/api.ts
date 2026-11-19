@@ -1,4 +1,5 @@
 import type { Quake, Volcano, VolcanoStatus, Period, AlertInfo, ReportItem, ReportsPayload, TsunamiAlert } from './types';
+import { latestOfficialPvmbgBulletin } from './volcanoPulse';
 
 /* ============================ GVP (Smithsonian) — via proxy /api/gvp ============================
  * Fontes oficiais:
@@ -305,7 +306,12 @@ export async function loadPvmbgStatus(): Promise<Map<string, AlertInfo>> {
   if (!Object.keys(j.levels ?? {}).length) throw new Error((j?.errors || []).join('; ') || 'PVMBG respondeu, mas nenhum nível de atividade foi reconhecido no formato recebido.');
   const m = new Map<string, AlertInfo>() as Map<string, AlertInfo> & { stale?: boolean; stamp?: string; cacheAgeMs?: number };
   for (const [name, lvl] of Object.entries(j.levels ?? {})) {
-    insertAliased(m, name, { source: 'PVMBG', level: lvl as number, noticeTime: j.stamp ? String(j.stamp).slice(0, 10) : undefined });
+    // A data vem do boletim oficial correspondente, nunca do stamp de coleta.
+    const bulletin = latestOfficialPvmbgBulletin(j.items, name);
+    insertAliased(m, name, {
+      source: 'PVMBG', level: lvl as number,
+      noticeTime: bulletin?.noticeTime, details: bulletin?.details,
+    });
   }
   Object.assign(m, { stale: !!j.stale, stamp: j.stamp, cacheAgeMs: j.cacheAgeMs });
   return m;
@@ -487,7 +493,7 @@ async function fetchQuakeFeedJSON(key: string, url: string, timeoutMs = 12_000):
 export function usgsFeedUrl(period: Period, minMag: number): string {
   // "all" cobre todos os eventos do período; tiers superiores apenas reduzem volume
   const tier = minMag >= 4.5 ? '4.5' : minMag >= 2.5 ? '2.5' : 'all';
-  const p = period === 'day' ? 'day' : period === 'week' ? 'week' : 'month';
+  const p = period === 'hour' ? 'hour' : period === 'week' ? 'week' : period === 'month' ? 'month' : 'day';
   return `https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/${tier}_${p}.geojson`;
 }
 
@@ -523,8 +529,8 @@ export async function loadQuakesUSGS(period: Period, minMag: number): Promise<Qu
 
 /** EMSC SeismicPortal (fdsnws) — fallback quando o USGS está indisponível. */
 export async function loadQuakesEMSC(period: Period, minMag: number): Promise<Quake[]> {
-  const days = period === 'day' ? 1 : period === 'week' ? 7 : 30;
-  const start = new Date(Date.now() - days * 86400e3).toISOString().slice(0, 19);
+  const windowMs = period === 'hour' ? 60 * 60_000 : period === '12h' ? 12 * 60 * 60_000 : period === 'day' ? 24 * 60 * 60_000 : period === 'week' ? 7 * 24 * 60 * 60_000 : 30 * 24 * 60 * 60_000;
+  const start = new Date(Date.now() - windowMs).toISOString().slice(0, 19);
   const url = `https://www.seismicportal.eu/fdsnws/event/1/query?format=json&starttime=${start}&minmagnitude=${minMag}&limit=1000&orderby=time`;
   const j = await fetchQuakeFeedJSON(`EMSC:${period}:${minMag}`, url, 12_000);
   return (j.features ?? []).map((f: any): Quake => {

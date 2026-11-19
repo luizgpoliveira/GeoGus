@@ -223,16 +223,32 @@ const ACTIVE_ERUPTION = /\b(?:ongoing|continuing|underway|in progress)\b[^.\n]{0
 const ERUPTION_GAP = /\b(?:no|without|not|ceased|stopped|paused|ended|no longer)\b[^.\n]{0,55}\beruption\b|\b(?:not|no longer|not currently)\s+(?:currently\s+)?erupting\b|\beruption\b[^.\n]{0,65}\b(?:paused|ended|stopped|ceased|no longer|not occurring|not ongoing|has ended)\b|\bfountaining\b[^.\n]{0,35}\b(?:stopped|ceased|ended|not occurring)\b|\b(?:tidak|belum|bukan)\b[^.\n]{0,45}\berupsi\b|\berupsi\b[^.\n]{0,65}\b(?:berakhir|berhenti|selesai|tidak(?:\s+sedang)?\s+berlangsung|tidak lagi berlangsung|telah\s+berhenti)\b|\b(?:letusan|erupsi)\b[^.\n]{0,55}\b(?:sudah berakhir|telah berakhir|tidak berlanjut)\b/i;
 /** Texto oficial descreve erupção em curso (e não pausada/encerrada)? */
 const isEruptiveText = (t) => ACTIVE_ERUPTION.test(t) && !ERUPTION_GAP.test(t);
-function interpret(text) {
-  const t = text || '';
+export function interpret(text) {
+  const t = String(text || '');
   const cats = RULES.filter(([, re]) => re.test(t)).map(([c]) => c);
   if (isEruptiveText(t) && !cats.includes('ERUPCAO')) cats.unshift('ERUPCAO');
+
+  // Só interpreta a altura vertical da coluna/pluma. Distância horizontal de
+  // dispersão (ex.: "drifted 12 km downwind") não é altura de cinzas.
+  const feature = '(?:volcanic\\s+)?(?:ash\\s+)?(?:plume|column|pluma|coluna|colom|kolom\\s+abu)';
+  const number = '(\\d{1,3}(?:[.,]\\d{1,3})?|\\d{1,3}(?:,\\d{3})+(?:\\.\\d+)?)';
+  const unit = '(km|kilometers?|kilometres?|m|meters?|metres?|metros|ft|feet)';
+  const connectors = '(?:reached|reaching|rose\\s+to|rose\\s+up\\s+to|up\\s+to|to|at|height(?:\\s+of)?|altitude(?:\\s+of)?|high|above|atingiu|atinge|alcançou|alcança|a|de\\s+altura|setinggi|mencapai|hingga)';
+  const heightMatch = t.match(new RegExp(`${feature}[^.!?\\n]{0,100}?${connectors}\\s*${number}\\s*${unit}\\b`, 'i'))
+    || t.match(new RegExp(`${feature}[^.!?\\n]{0,60}?${number}\\s*${unit}\\s*(?:high|above|in\\s+altitude|de\\s+altura|di\\s+atas)`, 'i'))
+    || t.match(new RegExp(`${number}\\s*${unit}[^.!?\\n]{0,45}${feature}[^.!?\\n]{0,45}(?:high|above|altitude|height|acima|di\\s+atas)`, 'i'))
+    || t.match(new RegExp(`${number}\\s*${unit}\\s+(?:high|above\\s+(?:the\\s+)?(?:crater|sea\\s+level)|above\\s+the\\s+vent)`, 'i'));
   let ashKm = null;
-  const km = t.match(/(?:ash|plume|column|cinza|abu|ceniza|pluma)[^.\n]{0,160}?(\d+(?:[.,]\d+)?)\s*(?:km|kilometers?|kilometres?)\b/i);
-  const meters = t.match(/(?:ash|plume|column|cinza|abu|ceniza|pluma)[^.\n]{0,160}?(\d{2,5})\s*(?:m|metros|meters)\b/i)
-    || t.match(/(\d{2,5})\s*(?:m|metros|meters)\b[^.\n]{0,80}?(?:above the crater|dari puncak|de altura|acima)/i);
-  if (km) ashKm = Number(km[1].replace(',', '.'));
-  else if (meters) ashKm = Math.round((Number(meters[1]) / 10)) / 100;
+  if (heightMatch) {
+    const rawValue = String(heightMatch[1]);
+    const value = /,\d{3}(?:,|$)/.test(rawValue) ? Number(rawValue.replace(/,/g, '')) : Number(rawValue.replace(',', '.'));
+    const unitValue = String(heightMatch[2]).toLowerCase();
+    if (Number.isFinite(value) && value > 0) {
+      ashKm = unitValue.startsWith('m') && !unitValue.startsWith('mi') ? value / 1000
+        : unitValue === 'ft' || unitValue === 'feet' ? value * 0.0003048 : value;
+      ashKm = Math.round(ashKm * 100) / 100;
+    }
+  }
   const erupting = /erupsi|erupción|eruption|letusan/i.test(t);
   return { cats, ashKm, erupting };
 }
@@ -285,8 +301,9 @@ export async function getPhivolcs() {
       if (isEruptiveText(text)) interpreted.cats.unshift('ERUPCAO');
       let volcano = null;
       try { volcano = await matchVolcano(`${name} volcano philippines`); } catch { /* níveis continuam disponíveis sem associação GVP */ }
-      if (volcano && date) out.items.push({
-        id: `phivolcs-${bid}`, ts: Date.parse(date) || Date.now(), date,
+      const bulletinTs = date ? Date.parse(date) : NaN;
+      if (volcano && Number.isFinite(bulletinTs)) out.items.push({
+        id: `phivolcs-${bid}`, ts: bulletinTs, date,
         source: 'PHIVOLCS', kind: 'OFICIAL', verified: 'CONFIRMADO',
         title: `${name} Volcano Bulletin — Alert Level ${level ?? '?'}`, url,
         volcanoVn: volcano.vn, volcanoName: volcano.name, country: volcano.country,
@@ -346,11 +363,13 @@ export async function getPvmbg() {
         let volcano = null;
         try { volcano = await matchVolcano(name + ' gunung api indonesia'); } catch { /* nível textual permanece disponível */ }
         if (!volcano) continue;
+        const bulletinTs = Date.parse(iso);
+        if (!Number.isFinite(bulletinTs)) continue;
         const ip = interpret(desc);
         ip.cats = ip.cats.filter((c) => c !== 'ERUPCAO');
         if (isEruptiveText(desc)) ip.cats.unshift('ERUPCAO');
         out.items.push({
-          id: `pvmbg-${norm(volcano.name)}-${iso}-${norm(String(desc).slice(0, 20))}`, ts: Date.parse(iso) || Date.now(), date: iso,
+          id: `pvmbg-${norm(volcano.name)}-${iso}-${norm(String(desc).slice(0, 20))}`, ts: bulletinTs, date: iso,
           source: 'PVMBG', kind: 'OFICIAL', verified: 'CONFIRMADO', title: `${volcano.name} — Laporan Aktivitas (${levelText})`,
           url: 'https://magma.esdm.go.id/v1/gunung-api/laporan', volcanoVn: volcano.vn, volcanoName: volcano.name, country: volcano.country,
           text: desc, cats: ip.cats, ashKm: ip.ashKm, period: m[0].match(/Periode [\d:\- ]+WI[BTA]/)?.[0],
@@ -409,11 +428,15 @@ export async function getUsgs() {
       let volcano = null;
       try { volcano = await matchVolcano(`${v.volcano_name} united states volcano`); } catch { /* alerta oficial permanece no painel mesmo sem vínculo GVP */ }
       if (!volcano) return;
+      const sentText = String(sent || '').trim().replace(' ', 'T');
+      const sentIso = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(sentText) ? sentText : `${sentText}Z`;
+      const sentTs = Date.parse(sentIso);
+      if (!Number.isFinite(sentTs)) return;
       const ip = interpret(text);
       // WATCH/WARNING ou código vermelho não provam que a erupção esteja em andamento.
       if (isEruptiveText(text) && !ip.cats.includes('ERUPCAO')) ip.cats.unshift('ERUPCAO');
       out.items.push({
-        id: `usgs-${j.noticeId || vn}-${String(sent).slice(0, 10)}`, ts: Date.parse(String(sent).replace(' ', 'T') + 'Z') || Date.now(),
+        id: `usgs-${j.noticeId || vn}-${String(sent).slice(0, 10)}`, ts: sentTs,
         date: sent, source: 'USGS', kind: 'OFICIAL', verified: 'CONFIRMADO', title: j.noticeTitle || `${v.volcano_name} update`,
         url: j.noticeUrl || 'https://volcanoes.usgs.gov/', volcanoVn: volcano.vn, volcanoName: volcano.name, country: volcano.country,
         text: text.slice(0, 500), cats: ip.cats, ashKm: ip.ashKm, period: `${v.alert_level} ${v.color_code}`,

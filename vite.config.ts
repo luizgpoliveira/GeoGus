@@ -12,5 +12,6 @@ export default defineConfig({
       '/api': { target: 'http://127.0.0.1:8787', changeOrigin: true },
     },
   },
-  build: { sourcemap: false, chunkSizeWarningLimit: 900 },
+  build: { sourcemap: false, chunkSizeWarningLimit: 900, target: 'es2020' },
+  worker: { format: 'es' },
 });

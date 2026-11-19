@@ -1,7 +1,7 @@
 // Service worker do GeoGus: app-shell cache-first, dados/tiles network-first.
-// v10: faixa de fontes oculta no celular, listas em bottom-sheet e suporte ao evento push.
-const SHELL = 'gg-shell-v10';
-const DATA = 'gg-data-v10';
+// v15: ondas circulares globais para alertas vulcânicos laranja/vermelhos e estados oficiais ativos.
+const SHELL = 'gg-shell-v15';
+const DATA = 'gg-data-v15';
 
 self.addEventListener('message', (event) => {
   if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();

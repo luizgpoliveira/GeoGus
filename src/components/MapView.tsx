@@ -1,14 +1,30 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
 import L from 'leaflet';
 import 'leaflet.markercluster';
+import { maplibreGL } from '@maplibre/maplibre-gl-leaflet';
+import { setWorkerUrl } from 'maplibre-gl';
+import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet.markercluster/dist/MarkerCluster.css';
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
+import 'maplibre-gl/dist/maplibre-gl.css';
 import type { Quake, Volcano, Settings } from '../types';
 import { useI18n } from '../i18n';
 import { commonsImage, GVP_IMAGE_URL } from '../api';
 import { HISTORICAL_GEOLOGY, type HistoricalGeologyFeature } from '../historicalGeology';
 import { SUPER_VOLCANOES, SUPER_VOLCANO_IDS } from '../supervolcanoes';
+import { shouldPulseVolcano } from '../volcanoPulse';
+
+// MapLibre fornece o mapa-base vetorial/WebGL; Leaflet continua responsável
+// por todos os ícones, marcadores, clusters, popups, controles e animações.
+setWorkerUrl(workerUrl);
+const DARK_STYLE = 'https://tiles.openfreemap.org/styles/dark';
+const ESRI_FALLBACK_URL = 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}';
+
+export type MapController = {
+  flyTo: (center: [number, number], zoom: number, options?: { duration?: number }) => void;
+  fitBounds: (bounds: [[number, number], [number, number]], options?: { maxZoom?: number; duration?: number }) => void;
+};
 
 export const STATUS_META: Record<string, { color: string }> = {
   ERUPCAO: { color: '#ff3b30' },
@@ -32,25 +48,48 @@ function isWithinLast24Hours(timestamp: number, reference = Date.now()): boolean
 const VOLCANO_PATH = 'M2 21 L9 7 L11.2 11.5 L12.5 9 L14 12 L15 9.5 L22 21 Z';
 const BOLT_PATH = 'M13.5 2 L4.5 13.5 L10 13.5 L8.5 22 L19.5 10 L13 10 Z';
 
-function volcanoIcon(v: Volcano): L.DivIcon {
+function volcanoRiskClass(level: string): string {
+  return level === 'RED' ? 'risk-red' : level === 'ORANGE' ? 'risk-orange' : level === 'YELLOW' ? 'risk-yellow' : 'risk-green';
+}
+
+function volcanoIcon(v: Volcano, reference = Date.now()): L.DivIcon {
   const riskLevel = v.risk?.level ?? 'GREEN';
   const c = v.risk?.color ?? '#22c55e';
-  const pulseClass = riskLevel === 'RED' ? 'risk-red'
-    : riskLevel === 'ORANGE' ? 'risk-orange'
-      : riskLevel === 'YELLOW' ? 'risk-yellow' : '';
-  const size = riskLevel === 'RED' ? 31 : riskLevel === 'ORANGE' ? 29 : riskLevel === 'YELLOW' ? 27 : 22;
+  const recent = shouldPulseVolcano(v, reference);
+  const riskClass = volcanoRiskClass(riskLevel);
+  // Ícone sem medalhão/círculo: o símbolo fica limpo e a pulsação é aplicada
+  // diretamente ao SVG apenas enquanto a evidência tiver até 24 horas.
+  const size = riskLevel === 'RED' ? 26 : riskLevel === 'ORANGE' ? 24 : riskLevel === 'YELLOW' ? 22 : 20;
+  const svgSize = riskLevel === 'RED' ? 21 : riskLevel === 'ORANGE' ? 19 : riskLevel === 'YELLOW' ? 18 : 16;
   const label = riskLevel === 'RED' ? 'perigo'
     : riskLevel === 'ORANGE' ? 'atenção'
       : riskLevel === 'YELLOW' ? 'aviso' : 'normal / sem sinal elevado detectado';
+  const pulseDuration = riskLevel === 'RED' ? '1.55s' : riskLevel === 'ORANGE' ? '1.95s' : '2.65s';
   return L.divIcon({
     className: 'volc-icon-wrap',
-    // Verde é o estado visual padrão; só sinais amarelos/laranja/vermelhos pulsam.
-    html: `<div class="volc-icon ${pulseClass}" style="--c:${c};--marker-size:${size}px" role="img" aria-label="${v.name} — ${label}">` +
-      `<svg viewBox="0 0 24 24" width="${riskLevel === 'RED' ? 20 : 16}" height="${riskLevel === 'RED' ? 20 : 16}" aria-hidden="true">` +
-      `<path d="${VOLCANO_PATH}" fill="${c}" stroke="rgba(0,0,0,.72)" stroke-width="1.2" stroke-linejoin="round"/>` +
-      (riskLevel === 'RED' ? '<circle cx="12" cy="6" r="1.7" fill="#fff" opacity=".92"/><circle cx="14.6" cy="3.8" r="1.15" fill="#fff" opacity=".65"/>' : '') +
+    html: `<div class="volc-icon ${riskClass} ${recent ? 'pulse-active' : ''}" style="--c:${c};--marker-size:${size}px;--pulse-duration:${pulseDuration}" role="img" aria-label="${escapeHtml(v.name)} — ${escapeHtml(label)}${recent ? ', atualização nas últimas 24 horas' : ''}">` +
+      `<svg viewBox="0 0 24 24" width="${svgSize}" height="${svgSize}" aria-hidden="true">` +
+      `<path d="${VOLCANO_PATH}" fill="${c}" stroke="rgba(0,0,0,.78)" stroke-width="1.35" stroke-linejoin="round"/>` +
+      (riskLevel === 'RED' ? '<path d="M9.2 8.5 C7.2 6.7 9.7 5.5 9.4 3.5 M14.4 7.8 C12.8 5.7 15.6 4.8 15.1 2.5" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" opacity=".92"/>' : '') +
       '</svg></div>',
-    iconSize: [size, size], iconAnchor: [size / 2, size / 2], tooltipAnchor: [0, -size / 2],
+    iconSize: [size + 16, size + 16], iconAnchor: [(size + 16) / 2, (size + 16) / 2], tooltipAnchor: [0, -(size + 16) / 2],
+  });
+}
+
+function volcanoClusterIcon(cluster: any): L.DivIcon {
+  const children = cluster.getAllChildMarkers() as L.Marker[];
+  const count = cluster.getChildCount();
+  const highestRank = children.reduce((rank, marker) => Math.max(rank, Number((marker.options as any).volcanoRiskRank ?? 0)), 0);
+  const activeCount = children.filter((marker) => Number((marker.options as any).volcanoRiskRank ?? 0) > 0).length;
+  const recentCount = children.filter((marker) => Boolean((marker.options as any).volcanoRecent24)).length;
+  const color = highestRank >= 3 ? '#ef4444' : highestRank === 2 ? '#f97316' : highestRank === 1 ? '#facc15' : '#22c55e';
+  const riskClass = highestRank >= 3 ? 'risk-red' : highestRank === 2 ? 'risk-orange' : highestRank === 1 ? 'risk-yellow' : 'risk-green';
+  const size = count >= 250 ? 54 : count >= 50 ? 48 : count >= 10 ? 44 : 40;
+  const volcanoSvg = `<svg viewBox="0 0 24 24" width="25" height="25" aria-hidden="true"><path d="${VOLCANO_PATH}" fill="${color}" stroke="rgba(0,0,0,.8)" stroke-width="1.2" stroke-linejoin="round"/></svg>`;
+  return L.divIcon({
+    className: 'volcano-cluster-wrap',
+    html: `<span class="volcano-cluster ${riskClass} ${recentCount ? 'has-activity pulse-active' : ''}" style="--cluster-color:${color};--cluster-size:${size}px" role="img" aria-label="${count} vulcões agrupados; ${activeCount} com sinais de atividade; ${recentCount} atualizados em 24 h">${volcanoSvg}<b>${count}</b>${activeCount ? `<i>${activeCount} ativos</i>` : ''}</span>`,
+    iconSize: [size + 16, size + 16], iconAnchor: [(size + 16) / 2, (size + 16) / 2],
   });
 }
 
@@ -58,15 +97,13 @@ function quakeClusterIcon(cluster: any): L.DivIcon {
   const children = cluster.getAllChildMarkers() as L.Marker[];
   const maxMag = children.reduce((max, marker) => Math.max(max, Number((marker.options as any).quakeMag ?? 0)), 0);
   const count = cluster.getChildCount();
-  const tone = maxMag >= 6 ? '#ff3b30' : maxMag >= 4.5 ? '#ff9f0a' : '#64d2ff';
+  const tone = maxMag >= 6 ? '#ff453a' : maxMag >= 4.5 ? '#ff9f0a' : '#55c7ff';
   const hasRecent = children.some((marker) => Boolean((marker.options as any).quakeRecent24));
-  const size = count >= 100 ? 44 : count >= 10 ? 38 : 32;
+  const size = count >= 100 ? 50 : count >= 10 ? 45 : 40;
   return L.divIcon({
     className: 'quake-cluster-wrap',
-    // O agrupamento pulsa quando contém eventos da janela móvel de 24 h.
-    html: `<span class="quake-cluster ${hasRecent ? 'quake-cluster-live' : ''} ${maxMag >= 4.5 ? 'quake-cluster-highmag' : ''}" style="--cluster-color:${tone};--cluster-size:${size}px">${count}</span>`,
-    iconSize: [size, size],
-    iconAnchor: [size / 2, size / 2],
+    html: `<span class="quake-cluster ${hasRecent ? 'quake-cluster-live' : ''} ${maxMag >= 4.5 ? 'quake-cluster-highmag' : ''}" style="--cluster-color:${tone};--cluster-size:${size}px" role="img" aria-label="${count} terremotos agrupados; magnitude máxima ${maxMag.toFixed(1)}"><svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true"><path d="${BOLT_PATH}" fill="${tone}" stroke="#08111e" stroke-width=".8" stroke-linejoin="round"/></svg><b>${count}</b></span>`,
+    iconSize: [size + 14, size + 14], iconAnchor: [(size + 14) / 2, (size + 14) / 2],
   });
 }
 
@@ -74,29 +111,30 @@ function quakeClusterIcon(cluster: any): L.DivIcon {
 function pleistoceneVolcanoIcon(): L.DivIcon {
   return L.divIcon({
     className: 'pleistocene-volcano-wrap',
-    html: `<span class="pleistocene-volcano-marker" aria-hidden="true"><svg viewBox="0 0 24 24" width="17" height="17"><path d="${VOLCANO_PATH}" fill="#a78bfa" stroke="#171326" stroke-width="1.2" stroke-linejoin="round"/></svg></span>`,
-    iconSize: [25, 25], iconAnchor: [12.5, 12.5],
+    html: `<span class="pleistocene-volcano-marker" role="img" aria-label="Vulcão histórico do Pleistoceno"><svg viewBox="0 0 24 24" width="23" height="23" aria-hidden="true"><path d="${VOLCANO_PATH}" fill="#c4b5fd" stroke="#171326" stroke-width="1.2" stroke-linejoin="round"/></svg></span>`,
+    iconSize: [44, 44], iconAnchor: [22, 22],
   });
 }
 
 function pleistoceneClusterIcon(cluster: any): L.DivIcon {
   const count = cluster.getChildCount();
-  const size = count >= 100 ? 43 : count >= 10 ? 37 : 31;
+  const size = count >= 100 ? 58 : count >= 10 ? 51 : 45;
   return L.divIcon({
     className: 'pleistocene-cluster-wrap',
-    html: `<span class="pleistocene-cluster" style="--cluster-size:${size}px">${count}</span>`,
-    iconSize: [size, size], iconAnchor: [size / 2, size / 2],
+    html: `<span class="pleistocene-cluster" style="--cluster-size:${size}px" role="img" aria-label="${count} estruturas do Pleistoceno agrupadas"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="${VOLCANO_PATH}" fill="#c4b5fd"/></svg><b>${count}</b></span>`,
+    iconSize: [size + 12, size + 12], iconAnchor: [(size + 12) / 2, (size + 12) / 2],
   });
 }
 
-function superVolcanoIcon(volcano: Volcano): L.DivIcon {
+function superVolcanoIcon(volcano: Volcano, reference = Date.now()): L.DivIcon {
   const level = volcano.risk?.level ?? 'GREEN';
   const pulseClass = level === 'RED' ? 'risk-red' : level === 'ORANGE' ? 'risk-orange' : level === 'YELLOW' ? 'risk-yellow' : '';
+  const recent = shouldPulseVolcano(volcano, reference);
   const color = volcano.risk?.color ?? '#22c55e';
   return L.divIcon({
     className: 'super-volcano-wrap',
-    html: `<span class="super-volcano-marker ${pulseClass}" style="--risk-color:${color}" aria-label="${volcano.name} — ${volcano.risk?.label ?? 'NORMAL'}">✦</span>`,
-    iconSize: [36, 36], iconAnchor: [18, 18],
+    html: `<span class="super-volcano-marker ${pulseClass} ${recent ? 'pulse-active' : ''}" style="--risk-color:${color}" role="img" aria-label="${escapeHtml(volcano.name)} — ${escapeHtml(volcano.risk?.label ?? 'NORMAL')}">✦</span>`,
+    iconSize: [44, 44], iconAnchor: [22, 22],
   });
 }
 
@@ -133,9 +171,9 @@ function superVolcanoPopup(volcano: Volcano): HTMLElement {
 function historicalGeologyIcon(): L.DivIcon {
   return L.divIcon({
     className: 'historical-geo-icon-wrap',
-    html: '<span class="historical-geo-icon" aria-hidden="true">◇</span>',
-    iconSize: [26, 26],
-    iconAnchor: [13, 13],
+    html: '<span class="historical-geo-icon" role="img" aria-label="Estrutura geológica histórica">◇</span>',
+    iconSize: [44, 44],
+    iconAnchor: [22, 22],
   });
 }
 
@@ -277,10 +315,10 @@ function volcanoPopupHtml(v: Volcano, ongoing: Map<number, { start: string; end:
   el.innerHTML = `
     <h3>${escapeHtml(v.name)}</h3>
     <div class="row">${escapeHtml(v.country)} · ${escapeHtml(v.type)}</div>
-    <div class="kv"><span>Alerta operacional GeoGus</span><b style="color:${riskColor}">${riskLabel}</b></div>
-    <div class="muted small">Confiança do sinal: ${risk?.confidence ?? 'LIMITADA'} · Atualizado ${risk ? new Date(risk.updatedAt).toLocaleString() : '—'}</div>
+    <div class="kv"><span>Alerta operacional GeoGus</span><b style="color:${riskColor}">${escapeHtml(riskLabel)}</b></div>
+    <div class="muted small">Confiança do sinal: ${escapeHtml(risk?.confidence ?? 'LIMITADA')} · Atualizado ${risk ? new Date(risk.updatedAt).toLocaleString() : '—'}</div>
     <ul class="volcano-risk-reasons">${reasons}</ul>
-    ${risk?.seismic24h ? `<div class="kv"><span>Sismicidade até 15 km</span><b>${risk.seismic24h} evento(s) / 24 h · ${risk.seismicPrevious6d} nos 6 dias anteriores</b></div>` : ''}
+    ${risk?.seismic24h ? `<div class="kv"><span>Sismicidade até ${escapeHtml(risk.seismicRadiusKm ?? 15)} km</span><b>${risk.seismic24h} evento(s) / 24 h · ${risk.seismicPrevious6d} nos 6 dias anteriores</b></div>` : ''}
     ${v.activity?.length ? `<div class="pp-cats">${v.activity.slice(0, 5).map((k) => `<span class="tag cat-${escapeHtml(k)}">${escapeHtml(t(`cat.${k}`))}</span>`).join('')}</div>` : ''}
     ${alert ? `<div class="kv"><span>${t('pp.alertLevel')}</span><b>${escapeHtml(alert)}</b></div>` : ''}
     <div class="kv"><span>Status geológico GVP</span><b style="color:${meta.color}">${t(`status.${v.status}`)}</b></div>
@@ -299,13 +337,13 @@ function quakePopupHtml(q: Quake, t: any, locale: string): HTMLElement {
   const el = document.createElement('div');
   el.className = 'pp';
   el.innerHTML = `
-    <h3>${q.mag != null && q.mag >= 0 ? 'M ' + q.mag.toFixed(1) : 'M n/d'} <span class="badge mag">${q.magType || ''}</span></h3>
-    <div class="row">${q.place}</div>
+    <h3>${q.mag != null && q.mag >= 0 ? 'M ' + q.mag.toFixed(1) : 'M n/d'} <span class="badge mag">${escapeHtml(q.magType || '')}</span></h3>
+    <div class="row">${escapeHtml(q.place)}</div>
     <div class="kv"><span>${t('pp.depth')}</span><b>${q.depthKm.toFixed(1)} km</b></div>
     <div class="kv"><span>${t('pp.dateTime')}</span><b>${fmtDT(q.time, locale)}</b></div>
     <div class="kv"><span>${t('pp.coords')}</span><b>${q.lat.toFixed(2)}, ${q.lon.toFixed(2)}</b></div>
-    <div class="kv"><span>${t('pp.source')}</span><b>${q.source}${q.status ? ' · ' + q.status : ''}</b></div>
-    ${q.url ? `<a href="${q.url}" target="_blank" rel="noreferrer">${t('pp.viewAt')} ${q.source} ↗</a>` : ''}`;
+    <div class="kv"><span>${t('pp.source')}</span><b>${escapeHtml(q.source)}${q.status ? ' · ' + escapeHtml(q.status) : ''}</b></div>
+    ${q.url ? `<a href="${escapeHtml(q.url)}" target="_blank" rel="noopener noreferrer">${t('pp.viewAt')} ${escapeHtml(q.source)} ↗</a>` : ''}`;
   return el;
 }
 
@@ -313,14 +351,19 @@ function quakePopupHtml(q: Quake, t: any, locale: string): HTMLElement {
 
 function quakeMarker(q: Quake, onSelect: (q: Quake) => void, alertMag: number, t: any, locale: string): L.Marker {
   const c = magColor(q.mag);
-  const s = Math.round(Math.max(13, Math.min(34, 9 + q.mag * 3.4)));
+  const magnitude = Number.isFinite(q.mag) ? q.mag : 0;
+  // Símbolo sísmico solto, sem medalhão circular. A pulsação é temporal:
+  // magnitude/alerta não prolongam animação depois de 24 h do evento.
+  const s = Math.round(magnitude >= 6.5 ? 23 : magnitude >= 5 ? 22 : magnitude >= 4 ? 20 : magnitude >= 3 ? 19 : magnitude >= 2 ? 18 : 16);
   const alerted = q.mag >= alertMag;
   const recent24 = isWithinLast24Hours(q.time);
-  const pulsing = recent24 || alerted;
+  const pulsing = recent24;
+  const pulseDuration = alerted || magnitude >= 5 ? '1.7s' : magnitude >= 3 ? '2.05s' : '2.7s';
   const icon = L.divIcon({
     className: 'quake-icon-wrap',
-    html: `<div class="quake-icon ${pulsing ? 'pulsing-recent' : ''} ${alerted ? 'alerted' : ''}" style="--c:${c};--marker-size:${s}px" role="img" aria-label="Terremoto magnitude ${q.mag?.toFixed(1) ?? 'não disponível'}${recent24 ? ', nas últimas 24 horas' : ''}${alerted ? ', acima do limite de alerta' : ''}">` +
-      `<svg viewBox="0 0 24 24" width="${s}" height="${s}" aria-hidden="true">` +
+    html: `<div class="quake-icon ${pulsing ? 'pulse-active' : ''} ${alerted ? 'alerted' : ''}" style="--c:${c};--marker-size:${s}px;--pulse-duration:${pulseDuration}" role="img" aria-label="Terremoto magnitude ${q.mag?.toFixed(1) ?? 'não disponível'}${recent24 ? ', nas últimas 24 horas' : ''}${alerted ? ', acima do limite de alerta' : ''}">` +
+      `<svg viewBox="0 0 24 24" width="${Math.round(s * .92)}" height="${Math.round(s * .92)}" aria-hidden="true">` +
+      `<path d="M3.4 9.2 C1.2 11 1.2 13 3.4 14.8 M20.6 9.2 C22.8 11 22.8 13 20.6 14.8" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" opacity=".78"/>` +
       `<path d="${BOLT_PATH}" fill="${c}" stroke="rgba(0,0,0,.78)" stroke-width="1.1" stroke-linejoin="round"/>` +
       '</svg></div>',
     iconSize: [s + 16, s + 16],
@@ -346,7 +389,7 @@ interface Props {
   onSelectVolcano: (v: Volcano) => void;
   onKnowMore: (vn: number) => void;
   focus: { lat: number; lon: number; zoom: number; id: string; kind: 'quake' | 'volcano' | 'place'; name?: string } | null;
-  mapRef: React.MutableRefObject<L.Map | null>;
+  mapRef: MutableRefObject<MapController | null>;
 }
 
 export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing, onSelectQuake, onSelectVolcano, onKnowMore, focus, mapRef }: Props) {
@@ -359,6 +402,10 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
     return window.matchMedia('(max-width: 900px)').matches;
   });
   const divRef = useRef<HTMLDivElement>(null);
+  const leafletMapRef = useRef<L.Map | null>(null);
+  const [mapFallback, setMapFallback] = useState(false);
+  const [mapError, setMapError] = useState('');
+  const [pulseClock, setPulseClock] = useState(0);
   const qCluster = useRef<L.MarkerClusterGroup | null>(null);
   const vCluster = useRef<L.MarkerClusterGroup | null>(null);
   const vClusterFlat = useRef<L.LayerGroup | null>(null);
@@ -381,8 +428,28 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
     v.alertInfo?.noticeTime || '', v.alertInfo?.details || '',
     v.image?.file || '', v.image?.caption || '', v.image?.credit || '',
     (v.activity || []).join(','),
-    v.risk?.level || 'GREEN', v.risk?.reasons.join(';') || '', v.risk?.seismic24h ?? 0, v.risk?.seismicPrevious6d ?? 0,
+    v.alertInfos?.map((alert) => `${alert.source}:${alert.level}:${alert.colorCode ?? ''}:${alert.noticeTime ?? ''}:${alert.details ?? ''}`).join('|') || '',
+    v.risk?.level || 'GREEN', v.risk?.reasons.join(';') || '', v.risk?.activityAt ?? '', v.risk?.pulse ? 1 : 0,
+    v.risk?.continuing ? 1 : 0, v.risk?.seismic24h ?? 0, v.risk?.seismicPrevious6d ?? 0,
   ].join('~')).join('|'), [volcanoes]);
+  // Agenda a retirada da pulsação no instante exato em que a evidência mais
+  // próxima completa 24 h; não depende de um novo terremoto ou de polling.
+  useEffect(() => {
+    const now = Date.now();
+    const expiryTimes = [
+      ...volcanoes.filter((volcano) => (volcano.risk?.rank ?? 0) > 0 && volcano.risk?.continuing !== true).map((volcano) => Number(volcano.risk?.activityAt)),
+      ...quakes.map((quake) => Number(quake.time)),
+    ];
+    const nextExpiry = expiryTimes.reduce<number | null>((nearest, at) => {
+      if (!Number.isFinite(at) || at < now - 24 * 60 * 60_000 || at > now + 60_000) return nearest;
+      const deadline = at + 24 * 60 * 60_000 + 1;
+      return nearest == null || deadline < nearest ? deadline : nearest;
+    }, null);
+    if (nextExpiry == null) return;
+    const timer = window.setTimeout(() => setPulseClock((value) => value + 1), Math.max(25, nextExpiry - now));
+    return () => window.clearTimeout(timer);
+  }, [volcanoMarkerKey, quakes, pulseClock]);
+
   const ongoingMarkerKey = useMemo(() => [...(ongoing || new Map()).entries()]
     .sort((a, b) => Number(a[0]) - Number(b[0]))
     .map(([vn, item]) => `${vn}:${item.start}:${item.end || ''}:${item.vei ?? ''}`).join('|'), [ongoing]);
@@ -397,33 +464,101 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
 
   useEffect(() => {
     const container = divRef.current;
-    if (!container || mapRef.current) return;
-    const map = L.map(container, {
-      center: [-10, -40], zoom: 3, minZoom: 2, worldCopyJump: true,
-      zoomControl: false, preferCanvas: true, touchZoom: true,
-      scrollWheelZoom: !window.matchMedia('(pointer: coarse)').matches,
-      zoomSnap: 0.5, maxBounds: L.latLngBounds([-90, -220], [90, 220]),
-    });
-    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
-      attribution: 'Mapa: © Esri, Maxar, Earthstar Geographics © OpenStreetMap',
-      maxZoom: 16,
-    }).addTo(map);
+    if (!container || leafletMapRef.current) return;
+
+    let map: L.Map;
+    try {
+      map = L.map(container, {
+        center: [-10, -40], zoom: 3, minZoom: 1, maxZoom: 18,
+        zoomControl: false, preferCanvas: true, touchZoom: true,
+        scrollWheelZoom: !window.matchMedia('(pointer: coarse)').matches,
+        zoomSnap: 0.5, worldCopyJump: false,
+        maxBounds: L.latLngBounds([-85.0511, -180], [85.0511, 180]),
+        maxBoundsViscosity: 0.92,
+      });
+    } catch (error) {
+      console.error('[GeoGus] Não foi possível iniciar o mapa Leaflet:', error);
+      setMapError('Não foi possível iniciar o mapa neste navegador. Atualize o navegador ou tente outro dispositivo.');
+      return;
+    }
+
+    leafletMapRef.current = map;
+    // O ref público do App mantém uma API pequena e independente do motor.
+    mapRef.current = {
+      flyTo: (center, zoom, options = {}) => map.flyTo(center, zoom, { duration: Math.max(0, options.duration ?? 0.8) }),
+      fitBounds: (bounds, options = {}) => map.flyToBounds(L.latLngBounds(bounds[0], bounds[1]), {
+        maxZoom: options.maxZoom ?? 8,
+        duration: Math.max(0, options.duration ?? 0.8),
+        padding: [28, 28],
+      }),
+    };
+
+    let mapLibreLayer: ReturnType<typeof maplibreGL> | null = null;
+    let fallbackLayer: L.TileLayer | null = null;
+    let styleReady = false;
+    let fallbackTimer: number | undefined;
+    const useFallback = () => {
+      if (styleReady || fallbackLayer || !map.getContainer().isConnected) return;
+      console.warn('[GeoGus] Estilo vetorial não carregou a tempo; usando base raster alternativa.');
+      try { if (mapLibreLayer) map.removeLayer(mapLibreLayer); } catch { /* camada parcial */ }
+      mapLibreLayer = null;
+      fallbackLayer = L.tileLayer(ESRI_FALLBACK_URL, {
+        maxZoom: 16,
+        attribution: 'Mapa alternativo: © Esri, Maxar, Earthstar Geographics, OpenStreetMap contributors',
+        pane: 'tilePane',
+      }).addTo(map);
+      setMapFallback(true);
+      setMapError('');
+    };
+
+    try {
+      mapLibreLayer = maplibreGL({
+        style: DARK_STYLE,
+        interactive: false,
+        maxPitch: 0,
+        pitch: 0,
+        bearing: 0,
+        attributionControl: false,
+        fadeDuration: 120,
+      }).addTo(map);
+      const glMap = mapLibreLayer.getMaplibreMap();
+      const onStyleReady = () => {
+        styleReady = true;
+        if (fallbackTimer) window.clearTimeout(fallbackTimer);
+        setMapFallback(false);
+        setMapError('');
+      };
+      glMap.once('style.load', onStyleReady);
+      glMap.once('load', onStyleReady);
+      if (glMap.isStyleLoaded()) onStyleReady();
+      glMap.on('error', (event: { error?: Error }) => {
+        if (!styleReady && event?.error) console.warn('[GeoGus] Erro ao carregar base vetorial:', event.error.message);
+      });
+      // O fallback só entra se o estilo inicial não carregar. Marcadores Leaflet
+      // permanecem nas panes superiores e continuam funcionando normalmente.
+      fallbackTimer = window.setTimeout(useFallback, 16000);
+    } catch (error) {
+      console.error('[GeoGus] Falha no MapLibre; usando base raster:', error);
+      useFallback();
+    }
+
     L.control.zoom({ position: 'bottomright' }).addTo(map);
+    L.control.attribution({ prefix: false }).addAttribution('© OpenFreeMap · © OpenStreetMap contributors').addTo(map);
     (map as any)._delegated = (e: MouseEvent) => {
       const b = (e.target as HTMLElement).closest?.('[data-act="more"]') as HTMLElement | null;
       if (b) cbRef.current.onKnowMore(Number(b.dataset.vn));
     };
     document.addEventListener('click', (map as any)._delegated);
-    mapRef.current = map;
+
     qCluster.current = L.markerClusterGroup({
-      maxClusterRadius: 30, showCoverageOnHover: false, chunkedLoading: true,
+      maxClusterRadius: 42, showCoverageOnHover: false, chunkedLoading: true, chunkInterval: 120, chunkDelay: 20,
       spiderfyOnMaxZoom: true, zoomToBoundsOnClick: true, disableClusteringAtZoom: 7,
       iconCreateFunction: quakeClusterIcon,
     });
-    vCluster.current = L.markerClusterGroup({ maxClusterRadius: 32, showCoverageOnHover: false, chunkedLoading: true, chunkInterval: 120, chunkDelay: 20, animateAddingMarkers: false, removeOutsideVisibleBounds: true, disableClusteringAtZoom: 9 });
+    vCluster.current = L.markerClusterGroup({ maxClusterRadius: 44, showCoverageOnHover: false, chunkedLoading: true, chunkInterval: 120, chunkDelay: 20, animateAddingMarkers: false, removeOutsideVisibleBounds: true, disableClusteringAtZoom: 9, spiderfyOnMaxZoom: true, zoomToBoundsOnClick: true, iconCreateFunction: volcanoClusterIcon });
     vClusterFlat.current = L.layerGroup();
     historicalLayer.current = L.layerGroup();
-    pleistoceneLayer.current = L.markerClusterGroup({ maxClusterRadius: 34, showCoverageOnHover: false, chunkedLoading: true, chunkInterval: 120, chunkDelay: 20, animateAddingMarkers: false, removeOutsideVisibleBounds: true, iconCreateFunction: pleistoceneClusterIcon });
+    pleistoceneLayer.current = L.markerClusterGroup({ maxClusterRadius: 42, showCoverageOnHover: false, chunkedLoading: true, chunkInterval: 120, chunkDelay: 20, animateAddingMarkers: false, removeOutsideVisibleBounds: true, iconCreateFunction: pleistoceneClusterIcon });
     superLayer.current = L.layerGroup();
     map.addLayer(vCluster.current);
     map.addLayer(vClusterFlat.current);
@@ -431,8 +566,7 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
     map.addLayer(pleistoceneLayer.current);
     map.addLayer(superLayer.current);
 
-    // Leaflet precisa recalcular o viewport quando o layout muda (mobile,
-    // rotação, abertura de painel, endereço do navegador ou redimensionamento).
+    // Leaflet recalcula o viewport em mudanças de layout, rotação e barras do navegador.
     let resizeRaf = 0;
     const invalidate = () => {
       if (resizeRaf) cancelAnimationFrame(resizeRaf);
@@ -447,15 +581,19 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
     window.addEventListener('orientationchange', invalidate, { passive: true });
     window.visualViewport?.addEventListener('resize', invalidate, { passive: true });
     const sizeTimers = [80, 240, 600].map((ms) => window.setTimeout(invalidate, ms));
+
     return () => {
       sizeTimers.forEach(clearTimeout);
+      if (fallbackTimer) window.clearTimeout(fallbackTimer);
       if (resizeRaf) cancelAnimationFrame(resizeRaf);
       resizeObserver?.disconnect();
       window.removeEventListener('resize', invalidate);
       window.removeEventListener('orientationchange', invalidate);
       window.visualViewport?.removeEventListener('resize', invalidate);
       document.removeEventListener('click', (map as any)._delegated);
-      map.remove(); mapRef.current = null; historicalLayer.current = null; pleistoceneLayer.current = null; superLayer.current = null;
+      qCluster.current = null; vCluster.current = null; vClusterFlat.current = null;
+      historicalLayer.current = null; pleistoceneLayer.current = null; superLayer.current = null;
+      try { map.remove(); } finally { leafletMapRef.current = null; mapRef.current = null; }
     };
   }, []);
 
@@ -476,17 +614,20 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
         const hasActivity = (v.risk?.rank ?? 0) > 0;
         if (flat && !hasActivity) continue;
         const severe = v.risk?.level === 'RED';
-        const m = L.marker([v.lat, v.lon], { icon: volcanoIcon(v), title: v.name, riseOnHover: true, zIndexOffset: severe ? 950 : hasActivity ? 850 : 450 });
-        m.bindPopup(() => volcanoPopupHtml(v, ongoingRef.current, t), { maxWidth: 300 });
+        const m = L.marker([v.lat, v.lon], { icon: volcanoIcon(v), title: v.name, alt: `${v.name} — ${v.risk?.label ?? 'NORMAL'}`, riseOnHover: true, riseOffset: 1400, zIndexOffset: severe ? 1100 : hasActivity ? 900 : 500 });
+        (m.options as L.MarkerOptions & { volcanoRiskRank?: number; volcanoRiskLevel?: string; volcanoRecent24?: boolean }).volcanoRiskRank = v.risk?.rank ?? 0;
+        (m.options as L.MarkerOptions & { volcanoRiskRank?: number; volcanoRiskLevel?: string; volcanoRecent24?: boolean }).volcanoRiskLevel = v.risk?.level ?? 'GREEN';
+        (m.options as L.MarkerOptions & { volcanoRecent24?: boolean }).volcanoRecent24 = shouldPulseVolcano(v);
+        m.bindPopup(() => volcanoPopupHtml(v, ongoingRef.current, t), { maxWidth: 340, autoPanPadding: [24, 24], closeButton: true });
         m.on('click', () => cbRef.current.onSelectVolcano(v));
         g.addLayer(m);
       }
     }
-  }, [volcanoMarkerKey, ongoingMarkerKey, settings.showVolcanoes, settings.country, settings.volcanoFilter, t]);
+  }, [volcanoMarkerKey, ongoingMarkerKey, pulseClock, settings.showVolcanoes, settings.country, settings.volcanoFilter, t]);
 
   // Vulcões do Pleistoceno: catálogo mundial do GVP (camada distinta dos Holocenos).
   useEffect(() => {
-    const map = mapRef.current;
+    const map = leafletMapRef.current;
     const group = pleistoceneLayer.current;
     if (!map || !group) return;
     group.clearLayers();
@@ -514,7 +655,7 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
   // Supervulcões/grandes caldeiras: camada própria e destacada, sem duplicar
   // marcadores do catálogo Holoceno/Pleistoceno.
   useEffect(() => {
-    const map = mapRef.current;
+    const map = leafletMapRef.current;
     const group = superLayer.current;
     if (!map || !group) return;
     group.clearLayers();
@@ -551,12 +692,12 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
       marker.on('click', () => cbRef.current.onSelectVolcano(volcano));
       group.addLayer(marker);
     }
-  }, [volcanoMarkerKey, settings.showVolcanoes, settings.showSupervolcanoes, settings.volcanoFilter, settings.country]);
+  }, [volcanoMarkerKey, pulseClock, settings.showVolcanoes, settings.showSupervolcanoes, settings.volcanoFilter, settings.country]);
 
   // Estruturas geológicas muito antigas (ex.: Mendanha/Amazônia): camada manual
   // separada do catálogo de vulcões Holocenos e Pleistocenos.
   useEffect(() => {
-    const map = mapRef.current;
+    const map = leafletMapRef.current;
     const group = historicalLayer.current;
     if (!map || !group) return;
     group.clearLayers();
@@ -587,11 +728,11 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
         g.addLayer(quakeMarker(q, cbRef.current.onSelectQuake, alertMag, t, locale));
       }
     }
-  }, [quakes, settings.showQuakes, settings.minMag, settings.country, alertMag, t, locale]);
+  }, [quakes, pulseClock, settings.showQuakes, settings.minMag, settings.country, alertMag, t, locale]);
 
   // foco + destaque temporário (+ popup do vulcão)
   useEffect(() => {
-    const map = mapRef.current; if (!map || !focus) return;
+    const map = leafletMapRef.current; if (!map || !focus) return;
     ringRef.current?.remove?.();
     const zoom = focus.kind === 'volcano' ? Math.max(focus.zoom, 10) : focus.zoom;
     map.flyTo([focus.lat, focus.lon], zoom, { duration: 0.8 });
@@ -628,7 +769,9 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
 
   return (
     <>
-      <div ref={divRef} className="mapview" />
+      <div ref={divRef} className="mapview mapview-hybrid" aria-label="Mapa global de monitoramento sísmico e vulcânico" />
+      {mapFallback && <div className="map-render-notice" role="status">Mapa vetorial indisponível; usando base cartográfica alternativa.</div>}
+      {mapError && <div className="map-render-error" role="alert">{mapError}</div>}
       {(mapAlertCounts.earthquakes > 0 || mapAlertCounts.volcanoes > 0) && (
         <div className="map-alert-summary" role="status" aria-live="polite">
           <span className="map-alert-summary-title">⚠ Alertas no mapa</span>
@@ -648,16 +791,16 @@ export default function MapView({ quakes, volcanoes, settings, alertMag, ongoing
           <span>{t('legend.title')}</span><span className="legend-chevron" aria-hidden="true">{legendCollapsed ? '＋' : '−'}</span>
         </button>
         <div id="map-legend-content" className="legend-content" aria-hidden={legendCollapsed}>
-          <span><i className="lg tri normal" /> {t('legend.normal')}</span>
-          <span><i className="lg tri aviso" /> {t('legend.advisory')}</span>
-          <span><i className="lg tri atencao" /> {t('legend.attention')}</span>
-          <span><i className="lg tri perigo" /> {t('legend.danger')}</span>
+          <span><i className="lg-map-icon lg-volcano normal"><svg viewBox="0 0 24 24" aria-hidden="true"><path d={VOLCANO_PATH} fill="currentColor" /></svg></i> {t('legend.normal')}</span>
+          <span><i className="lg-map-icon lg-volcano aviso"><svg viewBox="0 0 24 24" aria-hidden="true"><path d={VOLCANO_PATH} fill="currentColor" /></svg></i> {t('legend.advisory')}</span>
+          <span><i className="lg-map-icon lg-volcano atencao"><svg viewBox="0 0 24 24" aria-hidden="true"><path d={VOLCANO_PATH} fill="currentColor" /></svg></i> {t('legend.attention')}</span>
+          <span><i className="lg-map-icon lg-volcano perigo"><svg viewBox="0 0 24 24" aria-hidden="true"><path d={VOLCANO_PATH} fill="currentColor" /></svg></i> {t('legend.danger')}</span>
           {settings.showPleistoceneVolcanoes && <span><i className="lg-historical">△</i> Vulcões do Pleistoceno (catálogo mundial GVP)</span>}
           {settings.showSupervolcanoes && <span><i className="lg-super">✦</i> Supererupções documentadas / grandes caldeiras candidatas</span>}
           {settings.showHistoricalGeology && <span><i className="lg-historical">◇</i> Estruturas geológicas muito antigas</span>}
-          <span><i className="lg bolt"><svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d={BOLT_PATH} fill="#64d2ff" /></svg></i> {t('legend.quake')}</span>
+          <span><i className="lg-map-icon lg-quake"><svg viewBox="0 0 24 24" aria-hidden="true"><path d={BOLT_PATH} fill="#64d2ff" /></svg></i> {t('legend.quake')}</span>
           <span><i className="lg-alert" /> Terremoto acima do limite de alerta</span>
-          <span className="muted small">{t('pp.source')}: Smithsonian GVP · USGS/EMSC · Esri/OSM</span>
+          <span className="muted small">{t('pp.source')}: Base vetorial: OpenFreeMap · OpenStreetMap · Dados: Smithsonian GVP · USGS/EMSC</span>
         </div>
       </section>
     </>

@@ -29,14 +29,22 @@ const URLS = {
 };
 
 function periodValue(value) {
-  return ['day', 'week', 'month'].includes(String(value)) ? String(value) : 'day';
+  return ['hour', '12h', 'day', 'week', 'month'].includes(String(value)) ? String(value) : 'day';
+}
+function periodMs(period) {
+  return period === 'hour' ? 60 * 60_000
+    : period === '12h' ? 12 * 60 * 60_000
+      : period === 'day' ? 24 * 60 * 60_000
+        : period === 'week' ? 7 * 24 * 60 * 60_000 : 30 * 24 * 60 * 60_000;
 }
 function magnitudeValue(value) {
   const n = Number(value);
   return Number.isFinite(n) ? Math.max(0, Math.min(9, n)) : 1;
 }
-function periodDays(period) { return period === 'day' ? 1 : period === 'week' ? 7 : 30; }
-function withinPeriod(time, period) { return Number.isFinite(time) && time >= Date.now() - periodDays(period) * 86_400_000; }
+function periodStartMs(period, now = Date.now()) { return now - periodMs(period); }
+function withinPeriod(time, period, now = Date.now()) {
+  return Number.isFinite(time) && time >= periodStartMs(period, now) && time <= now + 60_000;
+}
 
 async function fetchResponse(url, timeoutMs = DEFAULT_TIMEOUT, accept = 'application/json, application/xml;q=0.9, text/plain;q=0.8') {
   const controller = new AbortController();
@@ -386,7 +394,7 @@ function parseSISBRAPrelim(text, minMag = 0, period = 'month') {
   return result.sort((a, b) => b.time - a.time);
 }
 
-function periodStart(period) { return new Date(Date.now() - periodDays(period) * 86_400_000).toISOString(); }
+function periodStart(period) { return new Date(periodStartMs(period)).toISOString(); }
 function buildBrazilFdsnUrl(base, period, minMag, params = {}) {
   const query = new URLSearchParams({
     starttime: periodStart(period), endtime: new Date().toISOString(),
@@ -399,7 +407,9 @@ function buildBrazilFdsnUrl(base, period, minMag, params = {}) {
 }
 
 async function loadUSGS(period, minMag) {
-  const p = period === 'day' ? 'day' : period === 'week' ? 'week' : 'month';
+  // USGS publica feed dedicado para a última hora; 12 h é obtido do feed diário
+  // e recortado com timestamp exato na agregação final.
+  const p = period === 'hour' ? 'hour' : period === 'week' ? 'week' : period === 'month' ? 'month' : 'day';
   const tier = minMag >= 4.5 ? '4.5' : minMag >= 2.5 ? '2.5' : 'all';
   return fromUSGS(await fetchJson(`${URLS.usgs}/${tier}_${p}.geojson`, 4_800), minMag);
 }
@@ -480,17 +490,17 @@ function mergeEvents(eventGroups) {
   return merged.sort((a, b) => b.time - a.time);
 }
 
-async function cachedSource(id, label, loader, ttlMs, staleTtlMs = STALE_TTL) {
+async function cachedSource(id, label, loader, ttlMs, staleTtlMs = STALE_TTL, cacheKey = id) {
   const now = Date.now();
-  const cached = state.sourceCache.get(id);
+  const cached = state.sourceCache.get(cacheKey);
   if (cached && now - cached.savedAt < ttlMs) {
     return { id, label, ok: true, stale: false, cached: true, count: cached.data.length, data: cached.data, stamp: cached.savedAt, ...(state.sourceMeta.get(id) || {}) };
   }
-  if (state.sourceInflight.has(id)) return state.sourceInflight.get(id);
+  if (state.sourceInflight.has(cacheKey)) return state.sourceInflight.get(cacheKey);
   const task = (async () => {
     try {
       const data = await loader();
-      state.sourceCache.set(id, { savedAt: Date.now(), data });
+      state.sourceCache.set(cacheKey, { savedAt: Date.now(), data });
       return { id, label, ok: true, stale: false, cached: false, count: data.length, data, stamp: Date.now(), ...(state.sourceMeta.get(id) || {}) };
     } catch (error) {
       const message = String(error?.message || error);
@@ -499,8 +509,8 @@ async function cachedSource(id, label, loader, ttlMs, staleTtlMs = STALE_TTL) {
       }
       return { id, label, ok: false, stale: false, cached: false, count: 0, data: [], stamp: null, error: message };
     }
-  })().finally(() => state.sourceInflight.delete(id));
-  state.sourceInflight.set(id, task);
+  })().finally(() => state.sourceInflight.delete(cacheKey));
+  state.sourceInflight.set(cacheKey, task);
   return task;
 }
 
@@ -565,11 +575,14 @@ export async function getEarthquakeFeed(periodInput = 'day', minMagInput = 1) {
 
   const task = (async () => {
     const sourceResults = await Promise.all(SOURCE_DEFINITIONS.map((source) =>
-      cachedSource(source.id, source.label, () => source.run(period, minMag), source.ttl),
+      cachedSource(source.id, source.label, () => source.run(period, minMag), source.ttl, STALE_TTL, `${source.id}:${period}:${minMag.toFixed(1)}`),
     ));
     const usable = sourceResults.filter((source) => source.ok);
     const eventGroups = sourceResults.map((source) => source.data);
-    const quakes = mergeEvents(eventGroups);
+    // Recorte final em UTC por milissegundos exatos: garante que fontes com
+    // feeds predefinidos (USGS 24 h para seleção de 12 h, por exemplo) não
+    // devolvam eventos fora da janela pedida.
+    const quakes = mergeEvents(eventGroups).filter((event) => withinPeriod(event.time, period, now));
     const errors = sourceResults.filter((source) => source.error).map((source) => `${source.label}: ${source.error}`);
     if (!usable.length) {
       if (cached && now - cached.savedAt < STALE_TTL) {
@@ -623,4 +636,7 @@ export {
   mergeEvents,
   fromEMSC,
   fromUSGS,
+  periodValue,
+  periodMs,
+  withinPeriod,
 };

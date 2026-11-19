@@ -23,6 +23,10 @@ export interface VolcanoRiskAssessment {
   seismicPrevious6d: number;
   seismicRadiusKm: number;
   confidence: 'ALTA' | 'MODERADA' | 'LIMITADA';
+  /** Instante da evidência mais recente que justificou o nível de risco. */
+  activityAt: number | null;
+  /** Episódio eruptivo atual ainda aberto na fonte GVP (estado contínuo). */
+  continuing: boolean;
   updatedAt: number;
 }
 
@@ -141,7 +145,7 @@ export interface SourceInfo {
   error?: string;
 }
 
-export type Period = 'day' | 'week' | 'month';
+export type Period = 'hour' | '12h' | 'day' | 'week' | 'month';
 
 export interface Settings {
   minMag: number;
